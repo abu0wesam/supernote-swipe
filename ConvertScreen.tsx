@@ -34,8 +34,8 @@ const PAGE_PIXELS = 2560;
 /** Height kept for everything under the preview: header, rows, buttons, messages. */
 const RESERVED_HEIGHT = 610;
 
-/** Worker threads used when the file is written (the module lowers it if the memory is short). */
-const THREADS = 5;
+/** Worker threads used when the file is written: four, the number that ran fastest on the Manta (the module lowers it if the memory is short). */
+const THREADS = 4;
 
 /** The real size of a page: the file API first, then the size the reader shows. */
 async function readPageSize(path: string, page: number): Promise<{w: number; h: number} | null> {
@@ -275,9 +275,12 @@ export default function ConvertScreen(): React.JSX.Element {
       setHasBackup(true);
       await (PluginFileAPI as any).openFile(info.path, info.current);
       const seconds = res.ms / 1000;
+      const timing = res as any;
+      const rounded = (v: unknown) => (typeof v === 'number' ? v.toFixed(0) : '?');
       setMessage(
         `Done: ${res.pages} pages in ${seconds.toFixed(0)} s (${(seconds / Math.max(1, res.pages)).toFixed(2)} s per page), ` +
-          `${res.threads} thread(s), ${(res.bytes / (1024 * 1024)).toFixed(1)} MB.`,
+          `${res.threads} thread(s), ${(res.bytes / (1024 * 1024)).toFixed(1)} MB.` +
+          `\nPer page, ms: draw ${rounded(timing.renderMs)}, process ${rounded(timing.workMs)}, compress ${rounded(timing.packMs)}, wait ${rounded(timing.waitMs)}, write ${rounded(timing.writeMs)}.`,
       );
     } catch (e: any) {
       if (e?.code === 'E_CANCELLED') {
