@@ -7,6 +7,7 @@ import App from './App';
 import {name as appName} from './app.json';
 
 import {PluginManager} from 'sn-plugin-lib';
+import {startPageFlip} from './src/pageflip';
 import {loadSettings} from './src/settings';
 import {start} from './src/switcher';
 import {showView} from './src/view';
@@ -34,3 +35,4 @@ for (const id of LEGACY_BUTTON_IDS) {
 }
 
 start();
+startPageFlip();
