@@ -39,4 +39,4 @@ for (const id of LEGACY_BUTTON_IDS) {
 
 start();
 startPageFlip();
-startToolbar(Image.resolveAssetSource(require('./assets/icon_swipe.png')).uri);
+startToolbar(Image.resolveAssetSource(require('./assets/icon_pdftool.png')).uri);

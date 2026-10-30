@@ -1,4 +1,6 @@
 import {DeviceEventEmitter, NativeModules} from 'react-native';
+import {PluginCommAPI} from 'sn-plugin-lib';
+import {createApplyGuard} from './pdfApplyGuard';
 
 /** Bridge to PdfToolModule (android/app/src/main/java/com/swipeswitch). */
 
@@ -37,8 +39,17 @@ export const processImage = (inPath: string, outPath: string, levels: Levels, ro
 
 export const detectSkew = (inPath: string) => bridge().detectSkew(inPath);
 
+// The SDK uses true to PREVENT sleep, false to allow sleep again.
+const guardedApply = createApplyGuard((enabled: boolean) => {
+  const setDormancy = (PluginCommAPI as any).setSystemDormancyState;
+  if (typeof setDormancy !== 'function') {
+    throw new Error('This Supernote SDK has no automatic-sleep protection API.');
+  }
+  return setDormancy.call(PluginCommAPI, enabled);
+});
+
 export const applyToPdf = (path: string, backupPath: string, options: ApplyOptions) =>
-  bridge().applyToPdf(path, backupPath, options);
+  guardedApply(() => bridge().applyToPdf(path, backupPath, options));
 
 /** Stops applyToPdf at the next page; the original file stays as it was. applyToPdf then fails with code E_CANCELLED. */
 export const cancelApply = () => bridge().cancelApply();

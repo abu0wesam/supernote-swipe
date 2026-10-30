@@ -1,11 +1,7 @@
 name: Release
 
-# Push a tag matching the plugin version (e.g. v1.0.0) to build the .snplg
-# and attach it to a GitHub release. Or run it by hand on a branch: the tag is
-# then made from versionName in PluginConfig.json.
+# Manual only: pushing source changes or tags never starts a build.
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -25,6 +21,10 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      - name: Prepare checked PDF Tool patch and icon
+        run: python3 tools/prepare_pdf_tool.py
+      - name: Test conversion sleep guard
+        run: node tools/test_pdf_apply_guard.mjs
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx jest
