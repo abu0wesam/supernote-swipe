@@ -7,15 +7,36 @@
 
 import React, {useEffect, useState} from 'react';
 import {Dimensions, Image, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
-import {FileUtils, NativeUIUtils, PluginDocAPI, PluginManager} from 'sn-plugin-lib';
+import {FileUtils, NativeUIUtils, PluginCommAPI, PluginDocAPI, PluginFileAPI, PluginManager} from 'sn-plugin-lib';
 import {DARK_LEVELS, MANTA_ASPECT, WIDTH_LEVELS, fillScale, widthScale} from './src/convert';
 import {PageInfo, pageInfo} from './src/pageflip';
 
-type Preview = {uri: string; width: number; height: number};
+type Preview = {uri: string; aspect: number; detail: string};
 
 let lastPreviewPath: string | null = null;
 
-async function renderPreview(page: number): Promise<Preview> {
+/** The real size of a page: the file API first, then the size the reader shows. */
+async function readPageSize(path: string, page: number): Promise<{w: number; h: number; source: string} | null> {
+  const tries: [string, () => Promise<any>][] = [
+    ['getPageSize', () => (PluginFileAPI as any).getPageSize(path, page)],
+    ['getPageDisplaySize', () => (PluginCommAPI as any).getPageDisplaySize()],
+  ];
+  for (const [source, call] of tries) {
+    try {
+      const res = await call();
+      const w = Number(res?.result?.width);
+      const h = Number(res?.result?.height);
+      if (res?.success && w > 0 && h > 0) {
+        return {w, h, source};
+      }
+    } catch {
+      // try the next one
+    }
+  }
+  return null;
+}
+
+async function renderPreview(path: string, page: number): Promise<Preview> {
   const dir = await PluginManager.getPluginDirPath();
   if (!dir) {
     throw new Error('The plugin folder is not available.');
@@ -27,17 +48,25 @@ async function renderPreview(page: number): Promise<Preview> {
       // already gone
     }
   }
+  const real = await readPageSize(path, page);
+  // Ask for an image with the page's own proportions, so the picture is not distorted.
+  const width = 960;
+  const height = real ? Math.min(5120, Math.max(1, Math.round((width * real.h) / real.w))) : 1280;
   const out = `${dir}/preview_${Date.now()}.png`;
-  const res: any = await (PluginDocAPI as any).generateCurrentDocImage(page, out, {width: 960, height: 1280}, 0);
+  const res: any = await (PluginDocAPI as any).generateCurrentDocImage(page, out, {width, height}, 0);
   if (!res?.success) {
     throw new Error(res?.error?.message ?? 'Could not draw the page.');
   }
   lastPreviewPath = out;
   const uri = `file://${out}`;
   const size = await new Promise<{width: number; height: number}>((resolve, reject) =>
-    Image.getSize(uri, (width, height) => resolve({width, height}), reject),
+    Image.getSize(uri, (w, h) => resolve({width: w, height: h}), reject),
   );
-  return {uri, ...size};
+  const aspect = real ? real.w / real.h : size.width / size.height;
+  const detail = real
+    ? `Page ${Math.round(real.w)}\u00d7${Math.round(real.h)} (${real.source}) \u00b7 proportion ${aspect.toFixed(3)}`
+    : `Page size unknown \u00b7 image ${size.width}\u00d7${size.height}`;
+  return {uri, aspect, detail};
 }
 
 function LevelRow({count, first, value, onPick}: {count: number; first: number; value: number; onPick: (n: number) => void}) {
@@ -72,7 +101,7 @@ export default function ConvertScreen(): React.JSX.Element {
           return;
         }
         setInfo(i);
-        const p = await renderPreview(i.current);
+        const p = await renderPreview(i.path, i.current);
         if (alive) {
           setPreview(p);
         }
@@ -90,12 +119,13 @@ export default function ConvertScreen(): React.JSX.Element {
   const win = Dimensions.get('window');
   const boxH = Math.min(win.height * 0.5, (win.width - 64) / MANTA_ASPECT);
   const boxW = boxH * MANTA_ASPECT;
-  const pageAspect = preview ? preview.width / preview.height : MANTA_ASPECT;
+  const pageAspect = preview ? preview.aspect : MANTA_ASPECT;
   const fill = fillScale(pageAspect, MANTA_ASPECT);
   const scale = widthScale(widthLevel, fill);
   const fitsHeight = pageAspect <= MANTA_ASPECT;
   const baseW = fitsHeight ? boxH * pageAspect : boxW;
   const baseH = fitsHeight ? boxH : boxW / pageAspect;
+  const alreadyWide = !!preview && fill <= 1.001;
 
   const generate = () => {
     NativeUIUtils.showRattaDialog(
@@ -129,6 +159,14 @@ export default function ConvertScreen(): React.JSX.Element {
           <Text style={styles.hint}>{error ? '' : 'Drawing the page\u2026'}</Text>
         )}
       </View>
+      {preview ? (
+        <Text style={styles.diag}>
+          {preview.detail} \u00b7 screen {MANTA_ASPECT.toFixed(3)} \u00b7 full width \u00d7{fill.toFixed(3)}
+        </Text>
+      ) : null}
+      {alreadyWide ? (
+        <Text style={styles.hint}>This page is already as wide as the screen, so the width levels change nothing.</Text>
+      ) : null}
 
       <Text style={styles.label}>Width: level {widthLevel + 1} of {WIDTH_LEVELS} (+{Math.round((scale - 1) * 100)}%)</Text>
       <LevelRow count={WIDTH_LEVELS} first={0} value={widthLevel} onPick={setWidthLevel} />
@@ -151,6 +189,7 @@ const styles = StyleSheet.create({
   title: {fontSize: 30, fontWeight: '700', color: '#000000'},
   close: {padding: 8},
   hint: {fontSize: 17, color: '#444444', marginVertical: 8, textAlign: 'center'},
+  diag: {fontSize: 15, color: '#444444', marginBottom: 4, fontFamily: 'monospace', textAlign: 'center'},
   error: {fontSize: 19, color: '#000000', marginVertical: 12, textAlign: 'center'},
   screen: {borderWidth: 2, borderColor: '#000000', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', marginVertical: 12},
   label: {fontSize: 21, color: '#000000', marginTop: 16, alignSelf: 'flex-start'},
