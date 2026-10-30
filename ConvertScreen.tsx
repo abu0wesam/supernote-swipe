@@ -27,8 +27,8 @@ type Raw = {path: string; dir: string; aspect: number; detail: string};
 
 let lastRawPath: string | null = null;
 
-/** Height, in pixels, of the page picture: the same as the pages of the new PDF. */
-const PAGE_PIXELS = 2048;
+/** Height, in pixels, of the page picture: the same as the pages of the new PDF (the Manta screen's height). */
+const PAGE_PIXELS = 2560;
 
 /** The real size of a page: the file API first, then the size the reader shows. */
 async function readPageSize(path: string, page: number): Promise<{w: number; h: number; source: string} | null> {
@@ -71,7 +71,7 @@ async function renderRaw(path: string, page: number): Promise<Raw> {
   const real = await readPageSize(path, page);
   // The picture has the page's own proportions and the height of the pages of the new PDF.
   const height = PAGE_PIXELS;
-  const width = real ? Math.min(5120, Math.max(1, Math.round((height * real.w) / real.h))) : 1536;
+  const width = real ? Math.min(5120, Math.max(1, Math.round((height * real.w) / real.h))) : 1920;
   const out = `${dir}/preview_${Date.now()}.png`;
   const res: any = await (PluginDocAPI as any).generateCurrentDocImage(page, out, {width, height}, 0);
   if (!res?.success) {
@@ -162,7 +162,7 @@ export default function ConvertScreen(): React.JSX.Element {
 
   const degrees = skew === 'off' ? 0 : skew === 'auto' ? detected ?? 0 : manualDeg;
 
-  // The preview with the real widening, darkening and straightening, a moment after a level changes.
+  // The preview with the real stretching, darkening and straightening, a moment after a level changes.
   useEffect(() => {
     if (!raw || !native) {
       return;
@@ -235,7 +235,11 @@ export default function ConvertScreen(): React.JSX.Element {
       const res = await applyToPdf(info.path, backup, widthLevel, darkLevel, skew, manualDeg);
       setHasBackup(true);
       await (PluginFileAPI as any).openFile(info.path, info.current);
-      setMessage(`Done: ${res.pages} pages. The file is reloaded in the reader.`);
+      const seconds = res.ms / 1000;
+      setMessage(
+        `Done: ${res.pages} pages in ${seconds.toFixed(0)} s (${(seconds / Math.max(1, res.pages)).toFixed(2)} s per page), ` +
+          `${(res.bytes / (1024 * 1024)).toFixed(1)} MB. The file is reloaded in the reader.`,
+      );
     } catch (e: any) {
       setMessage(`Failed: ${e?.message ?? e}`);
     } finally {
@@ -293,9 +297,12 @@ export default function ConvertScreen(): React.JSX.Element {
       </View>
       {raw ? <Text style={styles.diag}>{raw.detail}</Text> : null}
 
-      <Text style={styles.label}>Text width: level {widthLevel + 1} of {WIDTH_LEVELS}</Text>
+      <Text style={styles.label}>Text size: level {widthLevel + 1} of {WIDTH_LEVELS}</Text>
       <LevelRow count={WIDTH_LEVELS} first={0} value={widthLevel} onPick={setWidthLevel} />
-      <Text style={styles.hint}>The text itself is stretched towards the page edges; the page keeps its size. Level 1 leaves it as it is.</Text>
+      <Text style={styles.hint}>
+        The text itself grows towards the page edges: sideways as far as the level says, up and down by two thirds of that,
+        so the letters stay close to their natural shape. The page keeps its size. Level 1 leaves it as it is.
+      </Text>
 
       <Text style={styles.label}>Darkness: level {darkLevel} of {DARK_LEVELS}</Text>
       <LevelRow count={DARK_LEVELS} first={1} value={darkLevel} onPick={setDarkLevel} />

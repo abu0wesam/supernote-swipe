@@ -4,6 +4,8 @@ import {DeviceEventEmitter, NativeModules} from 'react-native';
 
 export type SkewMode = 'off' | 'auto' | 'manual';
 
+export type ApplyResult = {pages: number; bytes: number; ms: number};
+
 type Bridge = {
   processImage(inPath: string, outPath: string, darkLevel: number, rotateDeg: number, widthLevel: number): Promise<boolean>;
   detectSkew(inPath: string): Promise<number>;
@@ -14,7 +16,7 @@ type Bridge = {
     darkLevel: number,
     mode: SkewMode,
     manualDeg: number,
-  ): Promise<{pages: number; bytes: number}>;
+  ): Promise<ApplyResult>;
   restore(path: string, backupPath: string): Promise<boolean>;
 };
 
@@ -30,7 +32,7 @@ function bridge(): Bridge {
   return native;
 }
 
-/** Straightens, widens the text and darkens a picture of a page (the preview). */
+/** Straightens, stretches the text, sharpens and darkens a picture of a page (the preview). */
 export const processImage = (inPath: string, outPath: string, darkLevel: number, rotateDeg: number, widthLevel: number) =>
   bridge().processImage(inPath, outPath, darkLevel, rotateDeg, widthLevel);
 
