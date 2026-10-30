@@ -3,6 +3,7 @@
  * and under it one compact row for each setting: stretch sideways (which also centres the text),
  * stretch up and down, darkness, sharpness, background cleanup, tilt. The result can be applied to
  * the same file (and cancelled while it works); the original is kept and can be restored.
+ * The levels chosen are remembered for the next time the tool is opened.
  *
  * @format
  */
@@ -12,6 +13,7 @@ import {Dimensions, Image, Pressable, ScrollView, StyleSheet, Text, View} from '
 import {FileUtils, NativeUIUtils, PluginCommAPI, PluginDocAPI, PluginFileAPI, PluginManager} from 'sn-plugin-lib';
 import {MANTA_ASPECT} from './src/convert';
 import {PageInfo, pageInfo} from './src/pageflip';
+import {loadPdfToolSettings, savePdfToolSettings} from './src/pdfToolSettings';
 import {
   SkewMode,
   applyToPdf,
@@ -34,8 +36,8 @@ const PAGE_PIXELS = 2560;
 /** Height kept for everything under the preview: header, rows, buttons, messages. */
 const RESERVED_HEIGHT = 610;
 
-/** Worker threads used when the file is written (the module lowers it if the memory is short). */
-const THREADS = 5;
+/** Worker threads used when the file is written: four, the number that ran fastest on the Manta (the module lowers it if the memory is short). */
+const THREADS = 4;
 
 /** The real size of a page: the file API first, then the size the reader shows. */
 async function readPageSize(path: string, page: number): Promise<{w: number; h: number} | null> {
@@ -136,6 +138,7 @@ export default function ConvertScreen(): React.JSX.Element {
   const [cleanLevel, setCleanLevel] = useState(0); // 0..10
   const [skew, setSkew] = useState<SkewMode>('off');
   const [manualDeg, setManualDeg] = useState(0);
+  const [loaded, setLoaded] = useState(false);
   const [detected, setDetected] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState('');
@@ -144,6 +147,47 @@ export default function ConvertScreen(): React.JSX.Element {
 
   const native = nativeAvailable();
   const isPdf = !!info && info.path.toLowerCase().endsWith('.pdf');
+
+  // The levels saved the last time, before the first preview is made.
+  useEffect(() => {
+    let alive = true;
+    loadPdfToolSettings()
+      .then(saved => {
+        if (!alive) {
+          return;
+        }
+        if (saved) {
+          setWidthLevel(saved.width);
+          setHeightLevel(saved.height);
+          setDarkLevel(saved.dark);
+          setSharpLevel(saved.sharp);
+          setCleanLevel(saved.clean);
+          setSkew(saved.skew);
+          setManualDeg(saved.manual);
+        }
+        setLoaded(true);
+      })
+      .catch(() => alive && setLoaded(true));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Every change of a level is saved.
+  useEffect(() => {
+    if (!loaded) {
+      return;
+    }
+    savePdfToolSettings({
+      width: widthLevel,
+      height: heightLevel,
+      dark: darkLevel,
+      sharp: sharpLevel,
+      clean: cleanLevel,
+      skew,
+      manual: manualDeg,
+    });
+  }, [loaded, widthLevel, heightLevel, darkLevel, sharpLevel, cleanLevel, skew, manualDeg]);
 
   // The page open in the reader.
   useEffect(() => {
@@ -185,7 +229,7 @@ export default function ConvertScreen(): React.JSX.Element {
 
   // The preview with the real processing, a moment after a level changes.
   useEffect(() => {
-    if (!raw || !native) {
+    if (!raw || !native || !loaded) {
       return;
     }
     let alive = true;
@@ -219,7 +263,7 @@ export default function ConvertScreen(): React.JSX.Element {
       alive = false;
       clearTimeout(timer);
     };
-  }, [raw, native, darkLevel, degrees, widthLevel, heightLevel, sharpLevel, cleanLevel]);
+  }, [raw, native, loaded, darkLevel, degrees, widthLevel, heightLevel, sharpLevel, cleanLevel]);
 
   const win = Dimensions.get('window');
   const boxH = Math.max(260, Math.min(win.height - RESERVED_HEIGHT, (win.width - 24) / MANTA_ASPECT));
@@ -275,9 +319,12 @@ export default function ConvertScreen(): React.JSX.Element {
       setHasBackup(true);
       await (PluginFileAPI as any).openFile(info.path, info.current);
       const seconds = res.ms / 1000;
+      const timing = res as any;
+      const rounded = (v: unknown) => (typeof v === 'number' ? v.toFixed(0) : '?');
       setMessage(
         `Done: ${res.pages} pages in ${seconds.toFixed(0)} s (${(seconds / Math.max(1, res.pages)).toFixed(2)} s per page), ` +
-          `${res.threads} thread(s), ${(res.bytes / (1024 * 1024)).toFixed(1)} MB.`,
+          `${res.threads} thread(s), ${(res.bytes / (1024 * 1024)).toFixed(1)} MB.` +
+          `\nPer page, ms: draw ${rounded(timing.renderMs)}, process ${rounded(timing.workMs)}, compress ${rounded(timing.packMs)}, wait ${rounded(timing.waitMs)}, write ${rounded(timing.writeMs)}.`,
       );
     } catch (e: any) {
       if (e?.code === 'E_CANCELLED') {
