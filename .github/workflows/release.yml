@@ -1,6 +1,6 @@
 name: Release
 
-# Push a tag matching the plugin version (e.g. v0.7.1) to build the .snplg
+# Push a tag matching the plugin version (e.g. v1.0.0) to build the .snplg
 # and attach it to a GitHub release. Or run it by hand on main: the tag is
 # then made from versionName in PluginConfig.json.
 on:
@@ -32,13 +32,13 @@ jobs:
           fi
           echo "name=v$version" >> "$GITHUB_OUTPUT"
       - run: bash ./buildPlugin.sh
-      - run: test -f build/outputs/SwipeSwitch.snplg
-      # The build is named after the plugin key (SwipeSwitch), which must never change;
-      # the release file carries the plugin's current name.
-      - run: cp build/outputs/SwipeSwitch.snplg build/outputs/Swipe.snplg
+      - run: |
+          ls -la build/outputs
+          test -n "$(ls build/outputs/*.snplg)"
+      - run: cp "$(ls build/outputs/*.snplg | head -n1)" build/outputs/PDFTool.snplg
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}
           target_commitish: ${{ github.sha }}
-          files: build/outputs/Swipe.snplg
+          files: build/outputs/PDFTool.snplg
           generate_release_notes: true
