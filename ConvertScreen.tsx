@@ -3,6 +3,7 @@
  * and under it one compact row for each setting: stretch sideways (which also centres the text),
  * stretch up and down, darkness, sharpness, background cleanup, tilt. The result can be applied to
  * the same file (and cancelled while it works); the original is kept and can be restored.
+ * The levels chosen are remembered for the next time the tool is opened.
  *
  * @format
  */
@@ -12,6 +13,7 @@ import {Dimensions, Image, Pressable, ScrollView, StyleSheet, Text, View} from '
 import {FileUtils, NativeUIUtils, PluginCommAPI, PluginDocAPI, PluginFileAPI, PluginManager} from 'sn-plugin-lib';
 import {MANTA_ASPECT} from './src/convert';
 import {PageInfo, pageInfo} from './src/pageflip';
+import {loadPdfToolSettings, savePdfToolSettings} from './src/pdfToolSettings';
 import {
   SkewMode,
   applyToPdf,
@@ -136,6 +138,7 @@ export default function ConvertScreen(): React.JSX.Element {
   const [cleanLevel, setCleanLevel] = useState(0); // 0..10
   const [skew, setSkew] = useState<SkewMode>('off');
   const [manualDeg, setManualDeg] = useState(0);
+  const [loaded, setLoaded] = useState(false);
   const [detected, setDetected] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState('');
@@ -144,6 +147,47 @@ export default function ConvertScreen(): React.JSX.Element {
 
   const native = nativeAvailable();
   const isPdf = !!info && info.path.toLowerCase().endsWith('.pdf');
+
+  // The levels saved the last time, before the first preview is made.
+  useEffect(() => {
+    let alive = true;
+    loadPdfToolSettings()
+      .then(saved => {
+        if (!alive) {
+          return;
+        }
+        if (saved) {
+          setWidthLevel(saved.width);
+          setHeightLevel(saved.height);
+          setDarkLevel(saved.dark);
+          setSharpLevel(saved.sharp);
+          setCleanLevel(saved.clean);
+          setSkew(saved.skew);
+          setManualDeg(saved.manual);
+        }
+        setLoaded(true);
+      })
+      .catch(() => alive && setLoaded(true));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Every change of a level is saved.
+  useEffect(() => {
+    if (!loaded) {
+      return;
+    }
+    savePdfToolSettings({
+      width: widthLevel,
+      height: heightLevel,
+      dark: darkLevel,
+      sharp: sharpLevel,
+      clean: cleanLevel,
+      skew,
+      manual: manualDeg,
+    });
+  }, [loaded, widthLevel, heightLevel, darkLevel, sharpLevel, cleanLevel, skew, manualDeg]);
 
   // The page open in the reader.
   useEffect(() => {
@@ -185,7 +229,7 @@ export default function ConvertScreen(): React.JSX.Element {
 
   // The preview with the real processing, a moment after a level changes.
   useEffect(() => {
-    if (!raw || !native) {
+    if (!raw || !native || !loaded) {
       return;
     }
     let alive = true;
@@ -219,7 +263,7 @@ export default function ConvertScreen(): React.JSX.Element {
       alive = false;
       clearTimeout(timer);
     };
-  }, [raw, native, darkLevel, degrees, widthLevel, heightLevel, sharpLevel, cleanLevel]);
+  }, [raw, native, loaded, darkLevel, degrees, widthLevel, heightLevel, sharpLevel, cleanLevel]);
 
   const win = Dimensions.get('window');
   const boxH = Math.max(260, Math.min(win.height - RESERVED_HEIGHT, (win.width - 24) / MANTA_ASPECT));
