@@ -7,6 +7,7 @@ import App from './App';
 import {name as appName} from './app.json';
 
 import {PluginManager} from 'sn-plugin-lib';
+import {loadFlipSettings} from './src/flipSettings';
 import {startPageFlip} from './src/pageflip';
 import {loadSettings} from './src/settings';
 import {start} from './src/switcher';
@@ -27,6 +28,7 @@ PluginManager.registerConfigButtonListener({
   },
 });
 loadSettings();
+loadFlipSettings();
 
 for (const id of LEGACY_BUTTON_IDS) {
   Promise.resolve()

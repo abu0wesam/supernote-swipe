@@ -1,6 +1,6 @@
 /**
- * The plugin view: settings (from the plugin manager) or the recent-files list
- * (from a gesture). Big tap targets and no animations, for e-ink.
+ * The plugin view: settings (from the plugin manager), the recent-files list
+ * or the go-to-page picker (from a gesture). Big tap targets and no animations, for e-ink.
  *
  * @format
  */
@@ -8,6 +8,8 @@
 import React, {useEffect, useReducer, useState} from 'react';
 import {Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {FileUtils, PluginManager, RattaFileSelector} from 'sn-plugin-lib';
+import {FlipDistance, getFlipSettings, subscribeFlip, updateFlip} from './src/flipSettings';
+import {getGotoInfo, goToPage, gotoVersion} from './src/pageflip';
 import {getHistory, kindOf, subscribeHistory} from './src/recent';
 import {
   ACTIONS,
@@ -111,18 +113,53 @@ function GestureCard({id, label}: {id: GestureId; label: string}) {
   );
 }
 
+const DISTANCES: {id: FlipDistance; label: string}[] = [
+  {id: 'short', label: 'Short'},
+  {id: 'normal', label: 'Normal'},
+  {id: 'long', label: 'Long'},
+];
+
+function FlipCard() {
+  const s = getFlipSettings();
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>One-finger page flip</Text>
+      <View style={styles.row}>
+        <Text style={[styles.hint, styles.grow]}>Flip pages with one finger (documents and notes)</Text>
+        <Toggle label={s.enabled ? 'On' : 'Off'} on={s.enabled} onPress={() => updateFlip({enabled: !s.enabled})} />
+      </View>
+      <View style={styles.row}>
+        <Text style={[styles.hint, styles.grow]}>{s.reversed ? 'Right → left = next page' : 'Left → right = next page (Arabic)'}</Text>
+        <Toggle label="Reverse" on={s.reversed} onPress={() => updateFlip({reversed: !s.reversed})} />
+      </View>
+      <View style={styles.row}>
+        <Text style={styles.hint}>Swipe length</Text>
+        {DISTANCES.map(d => (
+          <Toggle key={d.id} label={d.label} on={s.distance === d.id} onPress={() => updateFlip({distance: d.id})} />
+        ))}
+      </View>
+      <View style={styles.row}>
+        <Text style={[styles.hint, styles.grow]}>New page when flipping past the last page of a note</Text>
+        <Toggle label={s.newPage ? 'On' : 'Off'} on={s.newPage} onPress={() => updateFlip({newPage: !s.newPage})} />
+      </View>
+    </View>
+  );
+}
+
 function SettingsScreen() {
-  const refresh = useRefresh(subscribe, subscribeGesture);
+  const refresh = useRefresh(subscribe, subscribeGesture, subscribeFlip);
   useEffect(() => {
     refreshOrientation().then(refresh);
   }, [refresh]);
   const flip = getOptions().landscapeFlip;
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Header title="Swipe settings" />
+      <Header title="PDF Tool settings" />
+      <FlipCard />
       <Text style={styles.intro}>
         Choose what each multi-finger swipe does, and in which orientation. In landscape, two-finger swipes already
-        scroll the page, so three fingers are used there by default.
+        scroll the page, so three fingers are used there by default. Pick "Go to page..." to choose a page of the open
+        file.
       </Text>
       {GESTURES.map(g => (
         <GestureCard key={g.id} id={g.id} label={g.label} />
@@ -138,6 +175,53 @@ function SettingsScreen() {
       <Pressable style={styles.reset} onPress={resetSettings}>
         <Text style={styles.chipText}>Reset to defaults</Text>
       </Pressable>
+    </ScrollView>
+  );
+}
+
+function GotoScreen() {
+  const info = getGotoInfo();
+  const total = info?.total ?? null;
+  const [page, setPage] = useState((info?.current ?? 0) + 1);
+  const clamp = (n: number) => Math.max(1, total ? Math.min(total, n) : n);
+  const step = (delta: number) => setPage(p => clamp(p + delta));
+  const go = () => {
+    PluginManager.closePluginView();
+    setTimeout(() => {
+      goToPage(page - 1);
+    }, 300);
+  };
+  return (
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <Header title="Go to page" />
+      {info ? (
+        <>
+          <Text style={styles.intro}>
+            {stripExt(basename(info.path))} · now on page {info.current + 1}
+            {total ? ` of ${total}` : ''}
+          </Text>
+          <View style={styles.card}>
+            <Text style={styles.big}>{page}</Text>
+            <View style={styles.row}>
+              <Toggle label="−10" on={false} onPress={() => step(-10)} />
+              <Toggle label="−1" on={false} onPress={() => step(-1)} />
+              <Toggle label="+1" on={false} onPress={() => step(1)} />
+              <Toggle label="+10" on={false} onPress={() => step(10)} />
+            </View>
+            <View style={styles.row}>
+              <Toggle label="−100" on={false} onPress={() => step(-100)} />
+              <Toggle label="+100" on={false} onPress={() => step(100)} />
+              <Toggle label="First" on={false} onPress={() => setPage(1)} />
+              {total ? <Toggle label="Last" on={false} onPress={() => setPage(total)} /> : null}
+            </View>
+          </View>
+          <Pressable style={styles.reset} onPress={go}>
+            <Text style={styles.chipText}>Go to page {page}</Text>
+          </Pressable>
+        </>
+      ) : (
+        <Text style={styles.intro}>No open file was detected.</Text>
+      )}
     </ScrollView>
   );
 }
@@ -178,7 +262,14 @@ function RecentScreen() {
 
 function App(): React.JSX.Element {
   useRefresh(subscribeView);
-  return getViewMode() === 'recent' ? <RecentScreen /> : <SettingsScreen />;
+  const mode = getViewMode();
+  if (mode === 'recent') {
+    return <RecentScreen />;
+  }
+  if (mode === 'goto') {
+    return <GotoScreen key={gotoVersion()} />;
+  }
+  return <SettingsScreen />;
 }
 
 const styles = StyleSheet.create({
@@ -190,6 +281,7 @@ const styles = StyleSheet.create({
   intro: {fontSize: 19, lineHeight: 28, color: '#000000', marginVertical: 16},
   card: {borderWidth: 2, borderColor: '#000000', borderRadius: 12, padding: 16, marginBottom: 16},
   cardTitle: {fontSize: 24, fontWeight: '700', color: '#000000', marginBottom: 8},
+  big: {fontSize: 64, fontWeight: '700', color: '#000000', textAlign: 'center', marginVertical: 8},
   row: {flexDirection: 'row', alignItems: 'center', marginTop: 8},
   grow: {flex: 1},
   arrow: {borderWidth: 2, borderColor: '#000000', borderRadius: 8, width: 64, height: 56, alignItems: 'center', justifyContent: 'center'},

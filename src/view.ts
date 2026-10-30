@@ -1,11 +1,12 @@
 import {PluginManager} from 'sn-plugin-lib';
 
 /**
- * The plugin view has two uses: the settings screen (from the plugin manager)
- * and the recent-files list (from a gesture). This tells App which one to show.
+ * The plugin view has three uses: the settings screen (from the plugin manager),
+ * the recent-files list and the go-to-page picker (both from a gesture).
+ * This tells App which one to show.
  */
 
-export type ViewMode = 'settings' | 'recent';
+export type ViewMode = 'settings' | 'recent' | 'goto';
 
 let mode: ViewMode = 'settings';
 const listeners = new Set<() => void>();
