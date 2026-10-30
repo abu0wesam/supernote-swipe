@@ -21,7 +21,7 @@ AppRegistry.registerComponent(appName, () => Root);
 
 PluginManager.init();
 
-// The settings live in the plugin manager; the page tool is opened from the toolbar button of the document reader.
+// The settings live in the plugin manager; the page tools are opened from the toolbar buttons of the document reader.
 PluginManager.registerConfigButton();
 PluginManager.registerConfigButtonListener({
   onClick() {
@@ -39,4 +39,7 @@ for (const id of LEGACY_BUTTON_IDS) {
 
 start();
 startPageFlip();
-startToolbar(Image.resolveAssetSource(require('./assets/icon_pdftool.png')).uri);
+startToolbar(
+  Image.resolveAssetSource(require('./assets/icon_pdftool.png')).uri,
+  Image.resolveAssetSource(require('./assets/icon_text.png')).uri,
+);

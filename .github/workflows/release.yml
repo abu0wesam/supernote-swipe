@@ -25,8 +25,12 @@ jobs:
         run: python3 tools/prepare_pdf_tool.py
       - name: Prepare exact preview and bold icon 6
         run: python3 tools/prepare_exact_preview.py
+      - name: Prepare Text toolbar icon
+        run: python3 tools/prepare_text_assets.py
       - name: Test conversion sleep guard
         run: node tools/test_pdf_apply_guard.mjs
+      - name: Test Text formatting rules
+        run: node tools/test_text_css.mjs
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx jest

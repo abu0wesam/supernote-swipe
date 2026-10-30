@@ -3,11 +3,11 @@ import {PluginManager} from 'sn-plugin-lib';
 /**
  * The plugin view has several uses: the settings screen (from the plugin manager),
  * the recent-files list and the go-to-page picker (both from a gesture), and the
- * page tool (from the toolbar button of the document reader).
+ * PDF and Text tools (from the toolbar buttons of the document reader).
  * This tells the root component which one to show.
  */
 
-export type ViewMode = 'settings' | 'recent' | 'goto' | 'convert';
+export type ViewMode = 'settings' | 'recent' | 'goto' | 'convert' | 'text';
 
 let mode: ViewMode = 'settings';
 const listeners = new Set<() => void>();

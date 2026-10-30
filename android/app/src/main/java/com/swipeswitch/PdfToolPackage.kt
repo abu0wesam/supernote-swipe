@@ -7,7 +7,7 @@ import com.facebook.react.uimanager.ViewManager
 
 class PdfToolPackage : ReactPackage {
   override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> =
-      listOf(PdfToolModule(reactContext))
+      listOf(PdfToolModule(reactContext), EpubToolModule(reactContext))
 
   override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> =
       emptyList()

@@ -1,28 +1,34 @@
 import {PluginManager} from 'sn-plugin-lib';
 import {showView} from './view';
 
-/** Toolbar button of the document reader that opens the page tool. */
-const BUTTON_ID = 301;
+/** Toolbar buttons of the document reader: PDF tool and Text (EPUB) tool. */
+const PDF_BUTTON_ID = 301;
+const TEXT_BUTTON_ID = 302;
 
 let stamp = 0;
 
-/** Changes each time the button is pressed, so the screen starts afresh. */
+/** Changes each time a button is pressed, so the screen starts afresh. */
 export const convertVersion = () => stamp;
 
-export function startToolbar(icon: string) {
+function register(id: number, name: string, icon: string) {
   Promise.resolve(
     PluginManager.registerButton(1, ['DOC'], {
-      id: BUTTON_ID,
-      name: JSON.stringify({en: 'PDF Tool', zh_CN: 'PDF Tool'}),
+      id,
+      name: JSON.stringify({en: name, zh_CN: name}),
       icon,
       showType: 1,
     } as any),
   ).catch(e => console.warn('[PDF Tool] registerButton', e));
+}
+
+export function startToolbar(pdfIcon: string, textIcon: string) {
+  register(PDF_BUTTON_ID, 'PDF', pdfIcon);
+  register(TEXT_BUTTON_ID, 'Text', textIcon);
   PluginManager.registerButtonListener({
     onButtonPress(event: {id: number}) {
-      if (event.id === BUTTON_ID) {
+      if (event.id === PDF_BUTTON_ID || event.id === TEXT_BUTTON_ID) {
         stamp += 1;
-        showView('convert');
+        showView(event.id === PDF_BUTTON_ID ? 'convert' : 'text');
       }
     },
   });
