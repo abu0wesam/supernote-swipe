@@ -15,6 +15,7 @@ type Bridge = {
   processImage(inPath: string, outPath: string, options: Levels & {rotate: number}): Promise<boolean>;
   detectSkew(inPath: string): Promise<number>;
   applyToPdf(path: string, backupPath: string, options: ApplyOptions): Promise<ApplyResult>;
+  cancelApply(): Promise<boolean>;
   restore(path: string, backupPath: string): Promise<boolean>;
 };
 
@@ -38,6 +39,9 @@ export const detectSkew = (inPath: string) => bridge().detectSkew(inPath);
 
 export const applyToPdf = (path: string, backupPath: string, options: ApplyOptions) =>
   bridge().applyToPdf(path, backupPath, options);
+
+/** Stops applyToPdf at the next page; the original file stays as it was. applyToPdf then fails with code E_CANCELLED. */
+export const cancelApply = () => bridge().cancelApply();
 
 export const restoreBackup = (path: string, backupPath: string) => bridge().restore(path, backupPath);
 

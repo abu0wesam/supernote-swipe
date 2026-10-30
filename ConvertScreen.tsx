@@ -1,8 +1,8 @@
 /**
- * Page tool, all on one screen: the page open in the reader (large), and under it one compact row
- * for each setting: stretch sideways (which also centres the text), stretch up and down, darkness,
- * sharpness, background cleanup, tilt, threads. The result can be applied to the same file; the
- * original is kept and can be restored.
+ * Page tool, all on one screen: the page open in the reader (large; tap it to see it full screen),
+ * and under it one compact row for each setting: stretch sideways (which also centres the text),
+ * stretch up and down, darkness, sharpness, background cleanup, tilt. The result can be applied to
+ * the same file (and cancelled while it works); the original is kept and can be restored.
  *
  * @format
  */
@@ -16,6 +16,7 @@ import {
   SkewMode,
   applyToPdf,
   backupPathFor,
+  cancelApply,
   detectSkew,
   nativeAvailable,
   onProgress,
@@ -31,7 +32,10 @@ let lastRawPath: string | null = null;
 const PAGE_PIXELS = 2560;
 
 /** Height kept for everything under the preview: header, rows, buttons, messages. */
-const RESERVED_HEIGHT = 660;
+const RESERVED_HEIGHT = 610;
+
+/** Worker threads used when the file is written (the module lowers it if the memory is short). */
+const THREADS = 5;
 
 /** The real size of a page: the file API first, then the size the reader shows. */
 async function readPageSize(path: string, page: number): Promise<{w: number; h: number} | null> {
@@ -121,6 +125,8 @@ export default function ConvertScreen(): React.JSX.Element {
   const [raw, setRaw] = useState<Raw | null>(null);
   const [procPath, setProcPath] = useState<string | null>(null);
   const [showOriginal, setShowOriginal] = useState(false);
+  const [full, setFull] = useState(false);
+  const [updating, setUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [widthLevel, setWidthLevel] = useState(4); // 0..10
@@ -128,7 +134,6 @@ export default function ConvertScreen(): React.JSX.Element {
   const [darkLevel, setDarkLevel] = useState(3); // 1..10
   const [sharpLevel, setSharpLevel] = useState(3); // 0..10
   const [cleanLevel, setCleanLevel] = useState(0); // 0..10
-  const [threads, setThreads] = useState(4); // 1..7
   const [skew, setSkew] = useState<SkewMode>('off');
   const [manualDeg, setManualDeg] = useState(0);
   const [detected, setDetected] = useState<number | null>(null);
@@ -184,6 +189,7 @@ export default function ConvertScreen(): React.JSX.Element {
       return;
     }
     let alive = true;
+    setUpdating(true);
     const timer = setTimeout(async () => {
       try {
         const out = `${raw.dir}/proc_${Date.now()}.png`;
@@ -200,9 +206,11 @@ export default function ConvertScreen(): React.JSX.Element {
         const previous = procRef.current;
         procRef.current = out;
         setProcPath(out);
+        setUpdating(false);
         await removeFile(previous);
       } catch (e: any) {
         if (alive) {
+          setUpdating(false);
           setMessage(`Preview failed: ${e?.message ?? e}`);
         }
       }
@@ -240,7 +248,7 @@ export default function ConvertScreen(): React.JSX.Element {
       return;
     }
     const ok = await NativeUIUtils.showRattaDialog(
-      'Replace this file with the adjusted version?\nA copy of the original is kept, and "Restore original" brings it back.\nPages become images and a long book takes several minutes.',
+      'Replace this file with the adjusted version?\nA copy of the original is kept, and "Restore original" brings it back.\nPages become images and a long book takes several minutes. You can cancel while it works.',
       'Cancel',
       'Apply',
       false,
@@ -260,7 +268,7 @@ export default function ConvertScreen(): React.JSX.Element {
         height: heightLevel,
         sharp: sharpLevel,
         clean: cleanLevel,
-        threads,
+        threads: THREADS,
         mode: skew,
         manual: manualDeg,
       });
@@ -272,11 +280,24 @@ export default function ConvertScreen(): React.JSX.Element {
           `${res.threads} thread(s), ${(res.bytes / (1024 * 1024)).toFixed(1)} MB.`,
       );
     } catch (e: any) {
-      setMessage(`Failed: ${e?.message ?? e}`);
+      if (e?.code === 'E_CANCELLED') {
+        setMessage('Cancelled. The file was not changed.');
+      } else {
+        setMessage(`Failed: ${e?.message ?? e}`);
+      }
     } finally {
       stop();
       setBusy(false);
       setProgress('');
+    }
+  };
+
+  const cancel = async () => {
+    setMessage('Cancelling\u2026 it stops after the page in hand.');
+    try {
+      await cancelApply();
+    } catch {
+      // the work ends by itself
     }
   };
 
@@ -302,6 +323,18 @@ export default function ConvertScreen(): React.JSX.Element {
     }
   };
 
+  // The page with the proposed changes, over the whole window; a tap goes back.
+  if (full && shownUri) {
+    const winAspect = win.width / win.height;
+    const fullW = pageAspect > winAspect ? win.width : win.height * pageAspect;
+    const fullH = pageAspect > winAspect ? win.width / pageAspect : win.height;
+    return (
+      <Pressable style={styles.full} onPress={() => setFull(false)}>
+        <Image source={{uri: shownUri}} resizeMode="stretch" style={{width: fullW, height: fullH}} />
+      </Pressable>
+    );
+  }
+
   const tiltLabel = skew === 'auto' && detected !== null ? `Tilt ${detected.toFixed(1)}\u00b0` : 'Tilt';
 
   return (
@@ -310,6 +343,7 @@ export default function ConvertScreen(): React.JSX.Element {
         <Text style={styles.title}>PDF Tool</Text>
         <Text style={styles.page}>
           {info ? `Page ${info.current + 1}${info.total ? ` / ${info.total}` : ''}` : ''}
+          {updating ? '  \u00b7 updating\u2026' : ''}
         </Text>
         <Pressable onPress={() => PluginManager.closePluginView()} style={styles.close}>
           <Text style={styles.title}>{'\u2715'}</Text>
@@ -318,13 +352,19 @@ export default function ConvertScreen(): React.JSX.Element {
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {!native ? <Text style={styles.error}>This build has no native PDF module: the preview and applying are unavailable.</Text> : null}
 
-      <View style={[styles.screen, {width: boxW, height: boxH}]}>
+      <Pressable
+        style={[styles.screen, {width: boxW, height: boxH}]}
+        onPress={() => {
+          if (shownUri) {
+            setFull(true);
+          }
+        }}>
         {shownUri ? (
           <Image source={{uri: shownUri}} resizeMode="stretch" style={{width: baseW, height: baseH}} />
         ) : (
           <Text style={styles.hint}>{error ? '' : 'Drawing the page\u2026'}</Text>
         )}
-      </View>
+      </Pressable>
 
       <Row label="View">
         <Chip label="Original" on={showOriginal} onPress={() => setShowOriginal(true)} />
@@ -359,22 +399,23 @@ export default function ConvertScreen(): React.JSX.Element {
           </>
         ) : null}
       </Row>
-      <Row label="Threads">
-        <Levels from={1} to={7} value={threads} onPick={setThreads} />
-      </Row>
 
       <View style={styles.buttons}>
         <Pressable style={[styles.button, styles.buttonMain, (!native || busy) && styles.disabled]} onPress={apply} disabled={!native || busy}>
           <Text style={styles.buttonText}>{busy ? `Working ${progress}` : 'Apply to this file'}</Text>
         </Pressable>
-        {hasBackup ? (
-          <Pressable style={[styles.button, busy && styles.disabled]} onPress={restore} disabled={busy}>
+        {busy ? (
+          <Pressable style={styles.button} onPress={cancel}>
+            <Text style={styles.buttonText}>Cancel</Text>
+          </Pressable>
+        ) : hasBackup ? (
+          <Pressable style={styles.button} onPress={restore}>
             <Text style={styles.buttonText}>Restore original</Text>
           </Pressable>
         ) : null}
       </View>
       {message ? <Text style={styles.message}>{message}</Text> : null}
-      <Text style={styles.hint}>0 = off, 10 = strongest. Width also centres the text (equal side margins). Dark starts at 1.</Text>
+      <Text style={styles.hint}>Tap the page to see it full screen. 0 = off, 10 = strongest. Width also centres the text.</Text>
     </ScrollView>
   );
 }
@@ -382,6 +423,7 @@ export default function ConvertScreen(): React.JSX.Element {
 const styles = StyleSheet.create({
   container: {flex: 1, backgroundColor: '#ffffff'},
   content: {paddingHorizontal: 12, paddingVertical: 8, alignItems: 'center'},
+  full: {flex: 1, backgroundColor: '#ffffff', alignItems: 'center', justifyContent: 'center'},
   header: {flexDirection: 'row', alignItems: 'center', alignSelf: 'stretch', height: 44},
   title: {fontSize: 24, fontWeight: '700', color: '#000000'},
   page: {flex: 1, fontSize: 17, color: '#444444', textAlign: 'center'},

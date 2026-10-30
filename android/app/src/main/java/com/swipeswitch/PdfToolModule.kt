@@ -42,7 +42,7 @@ import kotlin.math.sin
  *  - processImage: clean the background, stretch the text, sharpen and darken a PNG, for the preview;
  *  - detectSkew: how much a scanned page is tilted;
  *  - applyToPdf: redraw every page of a PDF the same way and write it over the file,
- *    after keeping a copy of the original;
+ *    after keeping a copy of the original; cancelApply stops it and leaves the file untouched;
  *  - restore: put the kept copy back.
  *
  * Order of work on a page: straighten, make gray, clean the background, stretch the text towards
@@ -51,6 +51,11 @@ import kotlin.math.sin
 class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBaseJavaModule(ctx) {
 
   override fun getName(): String = "PdfTool"
+
+  /** Set by cancelApply; checked between pages. The file is only touched after the last page is done. */
+  @Volatile private var cancelRequested = false
+
+  private class CancelledException : RuntimeException("Cancelled")
 
   /** Levels chosen by the user: dark 1..10, the others 0 (off) .. 10. */
   private class Opts(val dark: Int, val width: Int, val height: Int, val sharp: Int, val clean: Int)
@@ -118,16 +123,25 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
   @ReactMethod
   fun applyToPdf(path: String, backupPath: String, options: ReadableMap, promise: Promise) {
     val o = readOpts(options)
-    val threads = readInt(options, "threads", 4).coerceIn(1, MAX_THREADS)
+    val threads = readInt(options, "threads", 5).coerceIn(1, MAX_THREADS)
     val mode = readString(options, "mode", "off")
     val manual = readDouble(options, "manual", 0.0)
     Thread {
       try {
         promise.resolve(runApply(path, backupPath, o, mode, manual, threads))
+      } catch (e: CancelledException) {
+        promise.reject("E_CANCELLED", "Cancelled")
       } catch (e: Throwable) {
         promise.reject("E_APPLY", e.message ?: e.toString())
       }
     }.start()
+  }
+
+  /** Stops applyToPdf at the next page. The original file is not changed. */
+  @ReactMethod
+  fun cancelApply(promise: Promise) {
+    cancelRequested = true
+    promise.resolve(true)
   }
 
   @ReactMethod
@@ -160,6 +174,7 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
 
   /** Runs the job; if memory runs out, starts again with half the threads. */
   private fun runApply(path: String, backupPath: String, o: Opts, mode: String, manualDeg: Double, requested: Int): WritableMap {
+    cancelRequested = false
     var threads = requested
     var failure: Throwable? = null
     for (attempt in 0 until 4) {
@@ -217,6 +232,7 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
         val pages = total
 
         fun flushOne() {
+          if (cancelRequested) throw CancelledException()
           val job = pending.removeFirst()
           val packed = job.future.get()
           writer.addPage(job.pw, job.ph, packed.w, packed.h, packed.z)
@@ -226,6 +242,7 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
 
         try {
           for (i in 0 until total) {
+            if (cancelRequested) throw CancelledException()
             val page = renderer.openPage(i)
             val pw = page.width
             val ph = page.height
@@ -249,6 +266,7 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
             while (pending.size >= workers + 1) flushOne()
           }
           while (pending.isNotEmpty()) flushOne()
+          if (cancelRequested) throw CancelledException()
           writer.finish()
         } catch (e: Throwable) {
           pool.shutdownNow()
@@ -262,6 +280,12 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
       }
     } finally {
       pfd.close()
+    }
+
+    // Last chance to stop: from here the file is being replaced, which is quick and is not interrupted.
+    if (cancelRequested) {
+      work.delete()
+      throw CancelledException()
     }
 
     // Keep the very first original: a second run must not replace it with an already adjusted file.
