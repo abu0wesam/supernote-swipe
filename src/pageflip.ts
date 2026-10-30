@@ -1,5 +1,13 @@
 import {Dimensions, PixelRatio} from 'react-native';
-import {NativeUIUtils, PluginCommAPI, PluginDocAPI, PluginFileAPI, PluginManager, PluginNoteAPI} from 'sn-plugin-lib';
+import {
+  FileUtils,
+  NativeUIUtils,
+  PluginCommAPI,
+  PluginDocAPI,
+  PluginFileAPI,
+  PluginManager,
+  PluginNoteAPI,
+} from 'sn-plugin-lib';
 import {FlipDirection, FlipTracker, targetPage} from './flip';
 import {DISTANCE_RATIO, getFlipSettings} from './flipSettings';
 import {Motion} from './gesture';
@@ -84,11 +92,34 @@ async function ensureWritePermission(): Promise<boolean> {
 }
 
 /**
+ * Exports the template of a page as a PNG in the plugin's private directory.
+ * A custom template (a PDF or image chosen by the user) cannot be named in
+ * insertNotePage, but an image path can: the new page then looks the same.
+ */
+async function exportTemplatePng(path: string, page: number): Promise<string | null> {
+  try {
+    const dir = await PluginManager.getPluginDirPath();
+    if (!dir) {
+      return null;
+    }
+    const out = `${dir}/last_template.png`;
+    try {
+      await FileUtils.deleteFile(out);
+    } catch {
+      // nothing to delete
+    }
+    const res: any = await (PluginFileAPI as any).generateNoteTemplatePng(path, page, out);
+    return res?.success && res.result !== false ? out : null;
+  } catch (e) {
+    console.warn('[PDF Tool] exportTemplatePng', e);
+    return null;
+  }
+}
+
+/**
  * Adds an empty page AFTER the last page of the open note, with the same
  * template as the last page, and shows it. The page number given to
- * insertNotePage is the position of the NEW page (an earlier version passed the
- * last page's index, which put the new page before it and pushed the written
- * page to the end).
+ * insertNotePage is the position of the NEW page.
  */
 async function appendPage(path: string, total: number): Promise<boolean> {
   if (!(await ensureWritePermission())) {
@@ -114,20 +145,38 @@ async function appendPage(path: string, total: number): Promise<boolean> {
     wanted = null;
   }
 
-  // The template name as is (system templates), then the usual places of a custom template.
-  const candidates = wanted ? [wanted, `${MY_STYLE}/${wanted}`, `${MY_STYLE}/${wanted}.png`] : [];
-  for (const template of candidates) {
-    const res = await file.insertNotePage({notePath: path, page: total, template});
+  // Attempts in order. A custom template (md5 other than 0) is reused through its exported image.
+  const attempts: {template: string; verify: boolean}[] = [];
+  const custom = md5 !== '' && md5 !== '0';
+  if (custom) {
+    const png = await exportTemplatePng(path, total - 1);
+    if (png) {
+      attempts.push({template: png, verify: false});
+    }
+  }
+  if (wanted) {
+    const base = wanted.replace(/^user_pdf_\d+_/, '');
+    attempts.push({template: wanted, verify: true});
+    attempts.push({template: `${MY_STYLE}/${wanted}`, verify: true});
+    attempts.push({template: `${MY_STYLE}/${wanted}.png`, verify: true});
+    attempts.push({template: `${MY_STYLE}/${base}.pdf`, verify: true});
+    attempts.push({template: `${MY_STYLE}/${base}.png`, verify: true});
+  }
+  for (const attempt of attempts) {
+    const res = await file.insertNotePage({notePath: path, page: total, template: attempt.template});
     if (!res?.success || !res.result) {
       continue;
     }
-    const check: any = await file.getNotePageTemplate(path, total);
-    if (check?.success && check.result?.name === wanted) {
-      await comm.reloadFile();
-      await comm.jumpToPage(total);
-      return true;
+    if (attempt.verify) {
+      const check: any = await file.getNotePageTemplate(path, total);
+      if (!(check?.success && check.result?.name === wanted)) {
+        await file.removeNotePage(path, total); // not the same template: undo and try the next form
+        continue;
+      }
     }
-    await file.removeNotePage(path, total); // not the same template: undo and try the next form
+    await comm.reloadFile();
+    await comm.jumpToPage(total);
+    return true;
   }
 
   const res = await file.insertNotePage({notePath: path, page: total, template: 'style_white'});
