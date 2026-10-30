@@ -1,5 +1,5 @@
 import {Dimensions, PixelRatio} from 'react-native';
-import {PluginCommAPI, PluginDocAPI, PluginFileAPI, PluginManager, PluginNoteAPI} from 'sn-plugin-lib';
+import {NativeUIUtils, PluginCommAPI, PluginDocAPI, PluginFileAPI, PluginManager, PluginNoteAPI} from 'sn-plugin-lib';
 import {FlipDirection, FlipTracker, targetPage} from './flip';
 import {DISTANCE_RATIO, getFlipSettings} from './flipSettings';
 import {Motion} from './gesture';
@@ -10,6 +10,8 @@ import {showView} from './view';
 
 /** Ignore a new flip right after one. */
 const COOLDOWN_MS = 500;
+/** Where custom templates (PDFs or images used as templates) live on the device. */
+const MY_STYLE = '/storage/emulated/0/MyStyle';
 
 function shortSidePx(): number {
   const s = Dimensions.get('screen');
@@ -30,6 +32,14 @@ const tracker = new FlipTracker(() => {
 
 function numberOf(res: any): number | null {
   return res?.success && typeof res.result === 'number' ? res.result : null;
+}
+
+async function notify(message: string) {
+  try {
+    await NativeUIUtils.showRattaDialog(message, '', 'OK', false);
+  } catch {
+    console.warn('[PDF Tool]', message);
+  }
 }
 
 export type PageInfo = {path: string; current: number; total: number | null};
@@ -73,7 +83,13 @@ async function ensureWritePermission(): Promise<boolean> {
   return choice === 1 || choice === 2;
 }
 
-/** Adds a page after the last page of the open note and shows it. */
+/**
+ * Adds an empty page AFTER the last page of the open note, with the same
+ * template as the last page, and shows it. The page number given to
+ * insertNotePage is the position of the NEW page (an earlier version passed the
+ * last page's index, which put the new page before it and pushed the written
+ * page to the end).
+ */
 async function appendPage(path: string, total: number): Promise<boolean> {
   if (!(await ensureWritePermission())) {
     return false;
@@ -85,26 +101,44 @@ async function appendPage(path: string, total: number): Promise<boolean> {
   if (!saved?.success || saved.result === false) {
     return false; // never touch the file while the note holds unsaved writing
   }
-  const templates: string[] = [];
+
+  let wanted: string | null = null;
+  let md5 = '';
   try {
-    const t = await file.getNotePageTemplate(path, total - 1);
-    const name = t?.success ? t.result?.name ?? t.result?.templateName : null;
-    if (typeof name === 'string' && name) {
-      templates.push(name);
+    const src: any = await file.getNotePageTemplate(path, total - 1);
+    if (src?.success && typeof src.result?.name === 'string' && src.result.name) {
+      wanted = src.result.name;
+      md5 = String(src.result.md5 ?? '');
     }
   } catch {
-    // fall back to the system templates below
+    wanted = null;
   }
-  templates.push('style_white', 'style_blank');
-  for (const template of templates) {
-    const res = await file.insertNotePage({notePath: path, page: total - 1, template});
-    if (res?.success && res.result) {
+
+  // The template name as is (system templates), then the usual places of a custom template.
+  const candidates = wanted ? [wanted, `${MY_STYLE}/${wanted}`, `${MY_STYLE}/${wanted}.png`] : [];
+  for (const template of candidates) {
+    const res = await file.insertNotePage({notePath: path, page: total, template});
+    if (!res?.success || !res.result) {
+      continue;
+    }
+    const check: any = await file.getNotePageTemplate(path, total);
+    if (check?.success && check.result?.name === wanted) {
       await comm.reloadFile();
       await comm.jumpToPage(total);
       return true;
     }
+    await file.removeNotePage(path, total); // not the same template: undo and try the next form
   }
-  return false;
+
+  const res = await file.insertNotePage({notePath: path, page: total, template: 'style_white'});
+  if (!res?.success || !res.result) {
+    await notify('Could not add a new page to this note.');
+    return false;
+  }
+  await comm.reloadFile();
+  await comm.jumpToPage(total);
+  await notify(`New page added with a blank template: the template of the last page could not be reused.\nTemplate: ${wanted ?? 'unknown'} (md5 ${md5 || '?'})`);
+  return true;
 }
 
 let busy = false;
