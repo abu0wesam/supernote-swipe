@@ -40,10 +40,14 @@ export const processImage = (inPath: string, outPath: string, levels: Levels, ro
 export const detectSkew = (inPath: string) => bridge().detectSkew(inPath);
 
 // The SDK uses true to PREVENT sleep, false to allow sleep again.
+// This API is optional: its absence must not disable PDF conversion.
 const guardedApply = createApplyGuard((enabled: boolean) => {
   const setDormancy = (PluginCommAPI as any).setSystemDormancyState;
   if (typeof setDormancy !== 'function') {
-    throw new Error('This Supernote SDK has no automatic-sleep protection API.');
+    if (enabled) {
+      console.warn('PDF Tool: automatic-sleep protection is unavailable; converting without it.');
+    }
+    return;
   }
   return setDormancy.call(PluginCommAPI, enabled);
 });
