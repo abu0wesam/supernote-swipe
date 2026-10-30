@@ -7,12 +7,20 @@ export type SkewMode = 'off' | 'auto' | 'manual';
 export type ApplyResult = {pages: number; bytes: number; ms: number};
 
 type Bridge = {
-  processImage(inPath: string, outPath: string, darkLevel: number, rotateDeg: number, widthLevel: number): Promise<boolean>;
+  processImage(
+    inPath: string,
+    outPath: string,
+    darkLevel: number,
+    rotateDeg: number,
+    widthLevel: number,
+    heightLevel: number,
+  ): Promise<boolean>;
   detectSkew(inPath: string): Promise<number>;
   applyToPdf(
     path: string,
     backupPath: string,
     widthLevel: number,
+    heightLevel: number,
     darkLevel: number,
     mode: SkewMode,
     manualDeg: number,
@@ -33,8 +41,14 @@ function bridge(): Bridge {
 }
 
 /** Straightens, stretches the text, sharpens and darkens a picture of a page (the preview). */
-export const processImage = (inPath: string, outPath: string, darkLevel: number, rotateDeg: number, widthLevel: number) =>
-  bridge().processImage(inPath, outPath, darkLevel, rotateDeg, widthLevel);
+export const processImage = (
+  inPath: string,
+  outPath: string,
+  darkLevel: number,
+  rotateDeg: number,
+  widthLevel: number,
+  heightLevel: number,
+) => bridge().processImage(inPath, outPath, darkLevel, rotateDeg, widthLevel, heightLevel);
 
 export const detectSkew = (inPath: string) => bridge().detectSkew(inPath);
 
@@ -42,10 +56,11 @@ export const applyToPdf = (
   path: string,
   backupPath: string,
   widthLevel: number,
+  heightLevel: number,
   darkLevel: number,
   mode: SkewMode,
   manualDeg: number,
-) => bridge().applyToPdf(path, backupPath, widthLevel, darkLevel, mode, manualDeg);
+) => bridge().applyToPdf(path, backupPath, widthLevel, heightLevel, darkLevel, mode, manualDeg);
 
 export const restoreBackup = (path: string, backupPath: string) => bridge().restore(path, backupPath);
 

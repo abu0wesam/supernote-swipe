@@ -44,9 +44,8 @@ import kotlin.math.sin
  *    after keeping a copy of the original;
  *  - restore: put the kept copy back.
  *
- * "Widen" keeps the page size and stretches the printed area (the text) towards the page edges:
- * sideways as far as the level says, up and down by two thirds of that stretch, so the letters
- * stay close to their natural proportions.
+ * "Stretch" keeps the page size and moves the printed area (the text) towards the page edges.
+ * Sideways and up-and-down are separate, each with levels 0 (off) to 10 (to the edge margin).
  */
 class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBaseJavaModule(ctx) {
 
@@ -55,13 +54,21 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
   // ---------------------------------------------------------------- preview
 
   @ReactMethod
-  fun processImage(inPath: String, outPath: String, darkLevel: Int, rotateDeg: Double, widthLevel: Int, promise: Promise) {
+  fun processImage(
+      inPath: String,
+      outPath: String,
+      darkLevel: Int,
+      rotateDeg: Double,
+      widthLevel: Int,
+      heightLevel: Int,
+      promise: Promise
+  ) {
     Thread {
       try {
         val opts = BitmapFactory.Options()
         opts.inMutable = true
         val decoded = BitmapFactory.decodeFile(inPath, opts) ?: throw IllegalStateException("Cannot read $inPath")
-        val result = enhance(decoded, rotateDeg, widthLevel, darkLevel)
+        val result = enhance(decoded, rotateDeg, widthLevel, heightLevel, darkLevel)
         val out = grayToBitmap(result.bytes, result.w, result.h)
         FileOutputStream(outPath).use { stream -> out.compress(Bitmap.CompressFormat.PNG, 100, stream) }
         out.recycle()
@@ -95,6 +102,7 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
       path: String,
       backupPath: String,
       widthLevel: Int,
+      heightLevel: Int,
       darkLevel: Int,
       mode: String,
       manualDeg: Double,
@@ -102,7 +110,7 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
   ) {
     Thread {
       try {
-        promise.resolve(runApply(path, backupPath, widthLevel, darkLevel, mode, manualDeg))
+        promise.resolve(runApply(path, backupPath, widthLevel, heightLevel, darkLevel, mode, manualDeg))
       } catch (e: Throwable) {
         promise.reject("E_APPLY", e.message ?: e.toString())
       }
@@ -129,14 +137,15 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
   private class Job(val pw: Int, val ph: Int, val future: Future<Packed>)
 
   /**
-   * Three stages run side by side: this thread draws page n+1 (PdfRenderer allows only one page
-   * at a time), two worker threads straighten / stretch / sharpen / darken / compress the pages
-   * already drawn, and the finished pages are written in order.
+   * Stages run side by side: this thread draws page n+1 (PdfRenderer allows only one page at a
+   * time), four worker threads straighten / stretch / sharpen / darken / compress the pages already
+   * drawn, and the finished pages are written in order.
    */
   private fun runApply(
       path: String,
       backupPath: String,
       widthLevel: Int,
+      heightLevel: Int,
       darkLevel: Int,
       mode: String,
       manualDeg: Double
@@ -186,7 +195,7 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
                     "manual" -> manualDeg
                     else -> 0.0
                   }
-                  val g = enhance(bmp, deg, widthLevel, darkLevel)
+                  val g = enhance(bmp, deg, widthLevel, heightLevel, darkLevel)
                   Packed(g.w, g.h, deflateBytes(g.bytes))
                 })
             pending.addLast(Job(pw, ph, future))
@@ -247,17 +256,14 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
     private const val MAX_WIDTH = 4096
 
     /** Pages processed at the same time by worker threads, and pages allowed to wait. */
-    private const val WORKERS = 2
-    private const val IN_FLIGHT = 3
+    private const val WORKERS = 4
+    private const val IN_FLIGHT = 5
 
-    /** Number of steps between width level 0 and the last level (5 levels). */
-    private const val WIDTH_STEPS = 4
+    /** Levels of each stretch: 0 = off, 10 = to the edge margin. */
+    private const val STRETCH_STEPS = 10
 
-    /** At the last width level the text ends this close to the page edge (share of the page). */
+    /** At the last level the text ends this close to the page edge (share of the page). */
     private const val EDGE = 0.02
-
-    /** Up-and-down stretch as a share of the sideways stretch. */
-    private const val VERTICAL_RATIO = 2.0 / 3.0
 
     /** Strength of the sharpening, in tenths. */
     private const val SHARPEN_TENTHS = 7
@@ -291,18 +297,18 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
     }
 
     /** Straighten, stretch, then sharpen and darken. The input bitmap is recycled. */
-    private fun enhance(input: Bitmap, rotateDeg: Double, widthLevel: Int, darkLevel: Int): Gray {
+    private fun enhance(input: Bitmap, rotateDeg: Double, widthLevel: Int, heightLevel: Int, darkLevel: Int): Gray {
       var bmp = input
       if (abs(rotateDeg) >= 0.05) {
         val rotated = rotate(bmp, rotateDeg)
         bmp.recycle()
         bmp = rotated
       }
-      if (widthLevel > 0) {
-        val widened = widen(bmp, widthLevel)
-        if (widened !== bmp) {
+      if (widthLevel > 0 || heightLevel > 0) {
+        val stretched = stretchText(bmp, widthLevel, heightLevel)
+        if (stretched !== bmp) {
           bmp.recycle()
-          bmp = widened
+          bmp = stretched
         }
       }
       val w = bmp.width
@@ -314,18 +320,25 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
 
     // ---------------------------------------------------------------- gray
 
-    /** 8-bit gray of a bitmap (transparent parts count as white). */
+    /** 8-bit gray of a bitmap (transparent parts count as white), read a band of rows at a time to save memory. */
     private fun grayBytes(bmp: Bitmap): ByteArray {
       val w = bmp.width
       val h = bmp.height
-      val px = IntArray(w * h)
-      bmp.getPixels(px, 0, w, 0, 0, w, h)
       val out = ByteArray(w * h)
-      for (i in px.indices) {
-        val p = px[i]
-        val a = (p ushr 24) and 0xFF
-        val g0 = (((p shr 16) and 0xFF) * 299 + ((p shr 8) and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
-        out[i] = (255 - ((255 - g0) * a) / 255).toByte()
+      val band = 64
+      val px = IntArray(w * band)
+      var y = 0
+      while (y < h) {
+        val rows = min(band, h - y)
+        bmp.getPixels(px, 0, w, 0, y, w, rows)
+        val base = y * w
+        for (i in 0 until w * rows) {
+          val p = px[i]
+          val a = (p ushr 24) and 0xFF
+          val g0 = (((p shr 16) and 0xFF) * 299 + ((p shr 8) and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
+          out[base + i] = (255 - ((255 - g0) * a) / 255).toByte()
+        }
+        y += rows
       }
       return out
     }
@@ -445,65 +458,45 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
       return out
     }
 
-    // ---------------------------------------------------------------- widening
+    // ---------------------------------------------------------------- stretching
 
     /**
-     * Stretches the printed area towards the page edges. Sideways: the part between the first and the
-     * last column that holds ink moves level / 4 of the way to the edge margin. Up and down: the part
-     * between the first and the last row that holds ink grows by two thirds of the same relative
-     * stretch, into the free space above and below. The blank strips outside shrink; the page keeps its size.
+     * Moves the printed area towards the page edges, each direction on its own. The part between the
+     * first and the last column that holds ink moves (widthLevel / 10) of the way to the side margins;
+     * the part between the first and the last row that holds ink moves (heightLevel / 10) of the way
+     * to the top and bottom margins. The blank strips outside shrink; the page keeps its size.
+     * One new picture is drawn, in nine blocks.
      */
-    private fun widen(src: Bitmap, level: Int): Bitmap {
+    private fun stretchText(src: Bitmap, widthLevel: Int, heightLevel: Int): Bitmap {
       val box = contentBox(src) ?: return src
-      val t = min(level, WIDTH_STEPS) / WIDTH_STEPS.toDouble()
-      val cl = box.left
-      val cr = box.right
-      val ct = box.top
-      val cb = box.bottom
-      val nl = cl + (min(cl, EDGE) - cl) * t
-      val nr = cr + (max(cr, 1.0 - EDGE) - cr) * t
+      val tw = min(widthLevel, STRETCH_STEPS) / STRETCH_STEPS.toDouble()
+      val th = min(heightLevel, STRETCH_STEPS) / STRETCH_STEPS.toDouble()
+      val nl = box.left + (min(box.left, EDGE) - box.left) * tw
+      val nr = box.right + (max(box.right, 1.0 - EDGE) - box.right) * tw
+      val nt = box.top + (min(box.top, EDGE) - box.top) * th
+      val nb = box.bottom + (max(box.bottom, 1.0 - EDGE) - box.bottom) * th
+      if (nl == box.left && nr == box.right && nt == box.top && nb == box.bottom) return src
 
-      var out = src
-      if (nl != cl || nr != cr) {
-        out = stretch(src, true, cl, cr, nl, nr)
-      }
-
-      val sideways = (nr - nl) / (cr - cl)
-      var extra = (cb - ct) * (sideways - 1.0) * VERTICAL_RATIO
-      val topRoom = ct - EDGE
-      val bottomRoom = (1.0 - EDGE) - cb
-      if (extra > 0.0005 && topRoom > 0.0 && bottomRoom > 0.0) {
-        extra = min(extra, topRoom + bottomRoom)
-        val topShare = topRoom / (topRoom + bottomRoom)
-        val nt = ct - extra * topShare
-        val nb = cb + extra * (1.0 - topShare)
-        val taller = stretch(out, false, ct, cb, nt, nb)
-        if (out !== src) out.recycle()
-        out = taller
-      }
-      return out
-    }
-
-    /**
-     * Redraws [c0, c1] of the picture (shares of its width or height) into [n0, n1]; the strips before
-     * and after are squeezed or stretched to fill what is left.
-     */
-    private fun stretch(src: Bitmap, horizontal: Boolean, c0: Double, c1: Double, n0: Double, n1: Double): Bitmap {
       val w = src.width
       val h = src.height
       val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
       val canvas = Canvas(out)
       canvas.drawColor(Color.WHITE)
       val paint = Paint(Paint.FILTER_BITMAP_FLAG)
-      val size = if (horizontal) w else h
-      fun at(f: Double): Int = (f * size).roundToInt().coerceIn(0, size)
-      val from = intArrayOf(0, at(c0), at(c1), size)
-      val to = intArrayOf(0, at(n0), at(n1), size)
-      for (i in 0..2) {
-        if (from[i + 1] > from[i] && to[i + 1] > to[i]) {
-          val s = if (horizontal) Rect(from[i], 0, from[i + 1], h) else Rect(0, from[i], w, from[i + 1])
-          val d = if (horizontal) Rect(to[i], 0, to[i + 1], h) else Rect(0, to[i], w, to[i + 1])
-          canvas.drawBitmap(src, s, d, paint)
+      fun at(f: Double, size: Int): Int = (f * size).roundToInt().coerceIn(0, size)
+      val fromX = intArrayOf(0, at(box.left, w), at(box.right, w), w)
+      val toX = intArrayOf(0, at(nl, w), at(nr, w), w)
+      val fromY = intArrayOf(0, at(box.top, h), at(box.bottom, h), h)
+      val toY = intArrayOf(0, at(nt, h), at(nb, h), h)
+      for (j in 0..2) {
+        for (i in 0..2) {
+          if (fromX[i + 1] > fromX[i] && fromY[j + 1] > fromY[j] && toX[i + 1] > toX[i] && toY[j + 1] > toY[j]) {
+            canvas.drawBitmap(
+                src,
+                Rect(fromX[i], fromY[j], fromX[i + 1], fromY[j + 1]),
+                Rect(toX[i], toY[j], toX[i + 1], toY[j + 1]),
+                paint)
+          }
         }
       }
       return out

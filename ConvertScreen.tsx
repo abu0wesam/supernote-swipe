@@ -1,8 +1,9 @@
 /**
  * Page tool: shows the page open in the reader and lets the user choose how
- * far to stretch the text towards the page edges (5 levels), how much to darken
- * it (10 levels) and whether to straighten tilted scans. The result can be
- * applied to the same file; the original is kept and can be restored.
+ * far to move the text towards the page edges, sideways and up-and-down on
+ * their own (10 levels each), how much to darken it (10 levels) and whether to
+ * straighten tilted scans. The result can be applied to the same file; the
+ * original is kept and can be restored.
  *
  * @format
  */
@@ -10,7 +11,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {Dimensions, Image, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {FileUtils, NativeUIUtils, PluginCommAPI, PluginDocAPI, PluginFileAPI, PluginManager} from 'sn-plugin-lib';
-import {DARK_LEVELS, MANTA_ASPECT, WIDTH_LEVELS} from './src/convert';
+import {DARK_LEVELS, MANTA_ASPECT} from './src/convert';
 import {PageInfo, pageInfo} from './src/pageflip';
 import {
   SkewMode,
@@ -29,6 +30,9 @@ let lastRawPath: string | null = null;
 
 /** Height, in pixels, of the page picture: the same as the pages of the new PDF (the Manta screen's height). */
 const PAGE_PIXELS = 2560;
+
+/** Levels of each stretch: 0 = off, 10 = to the edge margin. */
+const STRETCH_LEVELS = 10;
 
 /** The real size of a page: the file API first, then the size the reader shows. */
 async function readPageSize(path: string, page: number): Promise<{w: number; h: number; source: string} | null> {
@@ -85,12 +89,24 @@ async function renderRaw(path: string, page: number): Promise<Raw> {
   return {path: out, dir, aspect, detail};
 }
 
-function LevelRow({count, first, value, onPick}: {count: number; first: number; value: number; onPick: (n: number) => void}) {
+function LevelRow({
+  count,
+  first,
+  value,
+  onPick,
+  zeroLabel,
+}: {
+  count: number;
+  first: number;
+  value: number;
+  onPick: (n: number) => void;
+  zeroLabel?: string;
+}) {
   return (
     <View style={styles.levels}>
       {Array.from({length: count}, (_, i) => first + i).map(n => (
         <Pressable key={n} style={[styles.level, n === value && styles.levelOn]} onPress={() => onPick(n)}>
-          <Text style={[styles.levelText, n === value && styles.levelOnText]}>{n}</Text>
+          <Text style={[styles.levelText, n === value && styles.levelOnText]}>{n === 0 && zeroLabel ? zeroLabel : n}</Text>
         </Pressable>
       ))}
     </View>
@@ -111,7 +127,8 @@ export default function ConvertScreen(): React.JSX.Element {
   const [procPath, setProcPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [widthLevel, setWidthLevel] = useState(2); // 0..4
+  const [widthLevel, setWidthLevel] = useState(4); // 0..10
+  const [heightLevel, setHeightLevel] = useState(2); // 0..10
   const [darkLevel, setDarkLevel] = useState(3); // 1..10
   const [skew, setSkew] = useState<SkewMode>('off');
   const [manualDeg, setManualDeg] = useState(0);
@@ -171,7 +188,7 @@ export default function ConvertScreen(): React.JSX.Element {
     const timer = setTimeout(async () => {
       try {
         const out = `${raw.dir}/proc_${Date.now()}.png`;
-        await processImage(raw.path, out, darkLevel, degrees, widthLevel);
+        await processImage(raw.path, out, darkLevel, degrees, widthLevel, heightLevel);
         if (!alive) {
           await removeFile(out);
           return;
@@ -190,7 +207,7 @@ export default function ConvertScreen(): React.JSX.Element {
       alive = false;
       clearTimeout(timer);
     };
-  }, [raw, native, darkLevel, degrees, widthLevel]);
+  }, [raw, native, darkLevel, degrees, widthLevel, heightLevel]);
 
   const win = Dimensions.get('window');
   const boxH = Math.min(win.height * 0.46, (win.width - 64) / MANTA_ASPECT);
@@ -232,7 +249,7 @@ export default function ConvertScreen(): React.JSX.Element {
     const stop = onProgress((done, total) => setProgress(`${done} / ${total}`));
     try {
       const backup = await backupFor(info.path);
-      const res = await applyToPdf(info.path, backup, widthLevel, darkLevel, skew, manualDeg);
+      const res = await applyToPdf(info.path, backup, widthLevel, heightLevel, darkLevel, skew, manualDeg);
       setHasBackup(true);
       await (PluginFileAPI as any).openFile(info.path, info.current);
       const seconds = res.ms / 1000;
@@ -297,11 +314,14 @@ export default function ConvertScreen(): React.JSX.Element {
       </View>
       {raw ? <Text style={styles.diag}>{raw.detail}</Text> : null}
 
-      <Text style={styles.label}>Text size: level {widthLevel + 1} of {WIDTH_LEVELS}</Text>
-      <LevelRow count={WIDTH_LEVELS} first={0} value={widthLevel} onPick={setWidthLevel} />
+      <Text style={styles.label}>Stretch sideways: {widthLevel === 0 ? 'off' : `${widthLevel} of ${STRETCH_LEVELS}`}</Text>
+      <LevelRow count={STRETCH_LEVELS + 1} first={0} value={widthLevel} onPick={setWidthLevel} zeroLabel="Off" />
+
+      <Text style={styles.label}>Stretch up and down: {heightLevel === 0 ? 'off' : `${heightLevel} of ${STRETCH_LEVELS}`}</Text>
+      <LevelRow count={STRETCH_LEVELS + 1} first={0} value={heightLevel} onPick={setHeightLevel} zeroLabel="Off" />
       <Text style={styles.hint}>
-        The text itself grows towards the page edges: sideways as far as the level says, up and down by two thirds of that,
-        so the letters stay close to their natural shape. The page keeps its size. Level 1 leaves it as it is.
+        Each one moves the text that far towards the page edge (10 = to the margin). The page keeps its size. Set them
+        separately: books differ in proportions.
       </Text>
 
       <Text style={styles.label}>Darkness: level {darkLevel} of {DARK_LEVELS}</Text>
