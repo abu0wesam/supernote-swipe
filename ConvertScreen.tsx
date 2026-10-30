@@ -1,8 +1,7 @@
 /**
- * Page tool: shows the page open in the reader and lets the user choose how
- * far to move the text towards the page edges, sideways and up-and-down on
- * their own (10 levels each), how much to darken it (10 levels) and whether to
- * straighten tilted scans. The result can be applied to the same file; the
+ * Page tool, all on one screen: the page open in the reader (large), and under it one compact row
+ * for each setting: stretch sideways (which also centres the text), stretch up and down, darkness,
+ * sharpness, background cleanup, tilt, threads. The result can be applied to the same file; the
  * original is kept and can be restored.
  *
  * @format
@@ -11,7 +10,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {Dimensions, Image, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {FileUtils, NativeUIUtils, PluginCommAPI, PluginDocAPI, PluginFileAPI, PluginManager} from 'sn-plugin-lib';
-import {DARK_LEVELS, MANTA_ASPECT} from './src/convert';
+import {MANTA_ASPECT} from './src/convert';
 import {PageInfo, pageInfo} from './src/pageflip';
 import {
   SkewMode,
@@ -24,29 +23,29 @@ import {
   restoreBackup,
 } from './src/pdftool';
 
-type Raw = {path: string; dir: string; aspect: number; detail: string};
+type Raw = {path: string; dir: string; aspect: number};
 
 let lastRawPath: string | null = null;
 
 /** Height, in pixels, of the page picture: the same as the pages of the new PDF (the Manta screen's height). */
 const PAGE_PIXELS = 2560;
 
-/** Levels of each stretch: 0 = off, 10 = to the edge margin. */
-const STRETCH_LEVELS = 10;
+/** Height kept for everything under the preview: header, rows, buttons, messages. */
+const RESERVED_HEIGHT = 660;
 
 /** The real size of a page: the file API first, then the size the reader shows. */
-async function readPageSize(path: string, page: number): Promise<{w: number; h: number; source: string} | null> {
-  const tries: [string, () => Promise<any>][] = [
-    ['getPageSize', () => (PluginFileAPI as any).getPageSize(path, page)],
-    ['getPageDisplaySize', () => (PluginCommAPI as any).getPageDisplaySize()],
+async function readPageSize(path: string, page: number): Promise<{w: number; h: number} | null> {
+  const tries: (() => Promise<any>)[] = [
+    () => (PluginFileAPI as any).getPageSize(path, page),
+    () => (PluginCommAPI as any).getPageDisplaySize(),
   ];
-  for (const [source, call] of tries) {
+  for (const call of tries) {
     try {
       const res = await call();
       const w = Number(res?.result?.width);
       const h = Number(res?.result?.height);
       if (res?.success && w > 0 && h > 0) {
-        return {w, h, source};
+        return {w, h};
       }
     } catch {
       // try the next one
@@ -82,42 +81,38 @@ async function renderRaw(path: string, page: number): Promise<Raw> {
     throw new Error(res?.error?.message ?? 'Could not draw the page.');
   }
   lastRawPath = out;
-  const aspect = width / height;
-  const detail = real
-    ? `Page ${Math.round(real.w)}\u00d7${Math.round(real.h)} (${real.source}) \u00b7 proportion ${aspect.toFixed(3)}`
-    : `Page size unknown \u00b7 picture ${width}\u00d7${height}`;
-  return {path: out, dir, aspect, detail};
-}
-
-function LevelRow({
-  count,
-  first,
-  value,
-  onPick,
-  zeroLabel,
-}: {
-  count: number;
-  first: number;
-  value: number;
-  onPick: (n: number) => void;
-  zeroLabel?: string;
-}) {
-  return (
-    <View style={styles.levels}>
-      {Array.from({length: count}, (_, i) => first + i).map(n => (
-        <Pressable key={n} style={[styles.level, n === value && styles.levelOn]} onPress={() => onPick(n)}>
-          <Text style={[styles.levelText, n === value && styles.levelOnText]}>{n === 0 && zeroLabel ? zeroLabel : n}</Text>
-        </Pressable>
-      ))}
-    </View>
-  );
+  return {path: out, dir, aspect: width / height};
 }
 
 function Chip({label, on, onPress}: {label: string; on: boolean; onPress: () => void}) {
   return (
-    <Pressable style={[styles.chip, on && styles.levelOn]} onPress={onPress}>
-      <Text style={[styles.levelText, on && styles.levelOnText]}>{label}</Text>
+    <Pressable style={[styles.chip, on && styles.chipOn]} onPress={onPress}>
+      <Text style={[styles.chipText, on && styles.chipOnText]} numberOfLines={1}>
+        {label}
+      </Text>
     </Pressable>
+  );
+}
+
+/** One compact row: the name on the side, the choices in a line. */
+function Row({label, children}: {label: string; children: React.ReactNode}) {
+  return (
+    <View style={styles.row}>
+      <Text style={styles.rowLabel} numberOfLines={1}>
+        {label}
+      </Text>
+      <View style={styles.rowChips}>{children}</View>
+    </View>
+  );
+}
+
+function Levels({from, to, value, onPick}: {from: number; to: number; value: number; onPick: (n: number) => void}) {
+  return (
+    <>
+      {Array.from({length: to - from + 1}, (_, i) => from + i).map(n => (
+        <Chip key={n} label={String(n)} on={n === value} onPress={() => onPick(n)} />
+      ))}
+    </>
   );
 }
 
@@ -125,11 +120,15 @@ export default function ConvertScreen(): React.JSX.Element {
   const [info, setInfo] = useState<PageInfo | null>(null);
   const [raw, setRaw] = useState<Raw | null>(null);
   const [procPath, setProcPath] = useState<string | null>(null);
+  const [showOriginal, setShowOriginal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [widthLevel, setWidthLevel] = useState(4); // 0..10
   const [heightLevel, setHeightLevel] = useState(2); // 0..10
   const [darkLevel, setDarkLevel] = useState(3); // 1..10
+  const [sharpLevel, setSharpLevel] = useState(3); // 0..10
+  const [cleanLevel, setCleanLevel] = useState(0); // 0..10
+  const [threads, setThreads] = useState(4); // 1..7
   const [skew, setSkew] = useState<SkewMode>('off');
   const [manualDeg, setManualDeg] = useState(0);
   const [detected, setDetected] = useState<number | null>(null);
@@ -179,7 +178,7 @@ export default function ConvertScreen(): React.JSX.Element {
 
   const degrees = skew === 'off' ? 0 : skew === 'auto' ? detected ?? 0 : manualDeg;
 
-  // The preview with the real stretching, darkening and straightening, a moment after a level changes.
+  // The preview with the real processing, a moment after a level changes.
   useEffect(() => {
     if (!raw || !native) {
       return;
@@ -188,7 +187,12 @@ export default function ConvertScreen(): React.JSX.Element {
     const timer = setTimeout(async () => {
       try {
         const out = `${raw.dir}/proc_${Date.now()}.png`;
-        await processImage(raw.path, out, darkLevel, degrees, widthLevel, heightLevel);
+        await processImage(
+          raw.path,
+          out,
+          {dark: darkLevel, width: widthLevel, height: heightLevel, sharp: sharpLevel, clean: cleanLevel},
+          degrees,
+        );
         if (!alive) {
           await removeFile(out);
           return;
@@ -207,16 +211,17 @@ export default function ConvertScreen(): React.JSX.Element {
       alive = false;
       clearTimeout(timer);
     };
-  }, [raw, native, darkLevel, degrees, widthLevel, heightLevel]);
+  }, [raw, native, darkLevel, degrees, widthLevel, heightLevel, sharpLevel, cleanLevel]);
 
   const win = Dimensions.get('window');
-  const boxH = Math.min(win.height * 0.46, (win.width - 64) / MANTA_ASPECT);
+  const boxH = Math.max(260, Math.min(win.height - RESERVED_HEIGHT, (win.width - 24) / MANTA_ASPECT));
   const boxW = boxH * MANTA_ASPECT;
   const pageAspect = raw ? raw.aspect : MANTA_ASPECT;
   const fitsHeight = pageAspect <= MANTA_ASPECT;
   const baseW = fitsHeight ? boxH * pageAspect : boxW;
   const baseH = fitsHeight ? boxH : boxW / pageAspect;
-  const shownUri = procPath ? `file://${procPath}` : raw ? `file://${raw.path}` : null;
+  const shownPath = showOriginal ? raw?.path : procPath ?? raw?.path;
+  const shownUri = shownPath ? `file://${shownPath}` : null;
 
   const backupFor = async (path: string) => {
     const dir = await PluginManager.getPluginDirPath();
@@ -249,13 +254,22 @@ export default function ConvertScreen(): React.JSX.Element {
     const stop = onProgress((done, total) => setProgress(`${done} / ${total}`));
     try {
       const backup = await backupFor(info.path);
-      const res = await applyToPdf(info.path, backup, widthLevel, heightLevel, darkLevel, skew, manualDeg);
+      const res = await applyToPdf(info.path, backup, {
+        dark: darkLevel,
+        width: widthLevel,
+        height: heightLevel,
+        sharp: sharpLevel,
+        clean: cleanLevel,
+        threads,
+        mode: skew,
+        manual: manualDeg,
+      });
       setHasBackup(true);
       await (PluginFileAPI as any).openFile(info.path, info.current);
       const seconds = res.ms / 1000;
       setMessage(
         `Done: ${res.pages} pages in ${seconds.toFixed(0)} s (${(seconds / Math.max(1, res.pages)).toFixed(2)} s per page), ` +
-          `${(res.bytes / (1024 * 1024)).toFixed(1)} MB. The file is reloaded in the reader.`,
+          `${res.threads} thread(s), ${(res.bytes / (1024 * 1024)).toFixed(1)} MB.`,
       );
     } catch (e: any) {
       setMessage(`Failed: ${e?.message ?? e}`);
@@ -288,20 +302,19 @@ export default function ConvertScreen(): React.JSX.Element {
     }
   };
 
+  const tiltLabel = skew === 'auto' && detected !== null ? `Tilt ${detected.toFixed(1)}\u00b0` : 'Tilt';
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.header}>
         <Text style={styles.title}>PDF Tool</Text>
+        <Text style={styles.page}>
+          {info ? `Page ${info.current + 1}${info.total ? ` / ${info.total}` : ''}` : ''}
+        </Text>
         <Pressable onPress={() => PluginManager.closePluginView()} style={styles.close}>
           <Text style={styles.title}>{'\u2715'}</Text>
         </Pressable>
       </View>
-      {info ? (
-        <Text style={styles.hint}>
-          Page {info.current + 1}
-          {info.total ? ` of ${info.total}` : ''}
-        </Text>
-      ) : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {!native ? <Text style={styles.error}>This build has no native PDF module: the preview and applying are unavailable.</Text> : null}
 
@@ -312,78 +325,81 @@ export default function ConvertScreen(): React.JSX.Element {
           <Text style={styles.hint}>{error ? '' : 'Drawing the page\u2026'}</Text>
         )}
       </View>
-      {raw ? <Text style={styles.diag}>{raw.detail}</Text> : null}
 
-      <Text style={styles.label}>Stretch sideways: {widthLevel === 0 ? 'off' : `${widthLevel} of ${STRETCH_LEVELS}`}</Text>
-      <LevelRow count={STRETCH_LEVELS + 1} first={0} value={widthLevel} onPick={setWidthLevel} zeroLabel="Off" />
-
-      <Text style={styles.label}>Stretch up and down: {heightLevel === 0 ? 'off' : `${heightLevel} of ${STRETCH_LEVELS}`}</Text>
-      <LevelRow count={STRETCH_LEVELS + 1} first={0} value={heightLevel} onPick={setHeightLevel} zeroLabel="Off" />
-      <Text style={styles.hint}>
-        Each one moves the text that far towards the page edge (10 = to the margin). The page keeps its size. Set them
-        separately: books differ in proportions.
-      </Text>
-
-      <Text style={styles.label}>Darkness: level {darkLevel} of {DARK_LEVELS}</Text>
-      <LevelRow count={DARK_LEVELS} first={1} value={darkLevel} onPick={setDarkLevel} />
-
-      <Text style={styles.label}>Straighten tilted pages</Text>
-      <View style={styles.levels}>
+      <Row label="View">
+        <Chip label="Original" on={showOriginal} onPress={() => setShowOriginal(true)} />
+        <Chip label="Result" on={!showOriginal} onPress={() => setShowOriginal(false)} />
+      </Row>
+      <Row label="Width">
+        <Levels from={0} to={10} value={widthLevel} onPick={setWidthLevel} />
+      </Row>
+      <Row label="Height">
+        <Levels from={0} to={10} value={heightLevel} onPick={setHeightLevel} />
+      </Row>
+      <Row label="Dark">
+        <Levels from={1} to={10} value={darkLevel} onPick={setDarkLevel} />
+      </Row>
+      <Row label="Sharp">
+        <Levels from={0} to={10} value={sharpLevel} onPick={setSharpLevel} />
+      </Row>
+      <Row label="Clean">
+        <Levels from={0} to={10} value={cleanLevel} onPick={setCleanLevel} />
+      </Row>
+      <Row label={tiltLabel}>
         <Chip label="Off" on={skew === 'off'} onPress={() => setSkew('off')} />
         <Chip label="Auto" on={skew === 'auto'} onPress={() => setSkew('auto')} />
         <Chip label="Manual" on={skew === 'manual'} onPress={() => setSkew('manual')} />
-      </View>
-      {skew === 'auto' ? (
-        <Text style={styles.hint}>
-          {detected === null ? 'Measuring this page\u2026' : `This page: ${detected.toFixed(1)}\u00b0. Every page is measured on its own.`}
-        </Text>
-      ) : null}
-      {skew === 'manual' ? (
-        <View style={styles.levels}>
-          <Chip label="\u22121\u00b0" on={false} onPress={() => setManualDeg(d => Math.max(-5, +(d - 1).toFixed(2)))} />
-          <Chip label="\u22120.25\u00b0" on={false} onPress={() => setManualDeg(d => Math.max(-5, +(d - 0.25).toFixed(2)))} />
-          <Text style={styles.big}>{manualDeg.toFixed(2)}\u00b0</Text>
-          <Chip label="+0.25\u00b0" on={false} onPress={() => setManualDeg(d => Math.min(5, +(d + 0.25).toFixed(2)))} />
-          <Chip label="+1\u00b0" on={false} onPress={() => setManualDeg(d => Math.min(5, +(d + 1).toFixed(2)))} />
-        </View>
-      ) : null}
-      <Text style={styles.hint}>Positive = turn clockwise. The same angle is used for every page in manual mode.</Text>
+        {skew === 'manual' ? (
+          <>
+            <Chip label="-1" on={false} onPress={() => setManualDeg(d => Math.max(-5, +(d - 1).toFixed(2)))} />
+            <Chip label="-.25" on={false} onPress={() => setManualDeg(d => Math.max(-5, +(d - 0.25).toFixed(2)))} />
+            <Chip label={`${manualDeg.toFixed(2)}\u00b0`} on={true} onPress={() => setManualDeg(0)} />
+            <Chip label="+.25" on={false} onPress={() => setManualDeg(d => Math.min(5, +(d + 0.25).toFixed(2)))} />
+            <Chip label="+1" on={false} onPress={() => setManualDeg(d => Math.min(5, +(d + 1).toFixed(2)))} />
+          </>
+        ) : null}
+      </Row>
+      <Row label="Threads">
+        <Levels from={1} to={7} value={threads} onPick={setThreads} />
+      </Row>
 
-      {busy ? <Text style={styles.label}>Working: {progress}</Text> : null}
-      {message ? <Text style={styles.error}>{message}</Text> : null}
-
-      <Pressable style={[styles.generate, (!native || busy) && styles.disabled]} onPress={apply} disabled={!native || busy}>
-        <Text style={styles.generateText}>Apply to this file</Text>
-      </Pressable>
-      {hasBackup ? (
-        <Pressable style={[styles.generate, busy && styles.disabled]} onPress={restore} disabled={busy}>
-          <Text style={styles.generateText}>Restore original</Text>
+      <View style={styles.buttons}>
+        <Pressable style={[styles.button, styles.buttonMain, (!native || busy) && styles.disabled]} onPress={apply} disabled={!native || busy}>
+          <Text style={styles.buttonText}>{busy ? `Working ${progress}` : 'Apply to this file'}</Text>
         </Pressable>
-      ) : null}
-      <Text style={styles.hint}>Handwriting you already wrote on this PDF may move when the page is changed.</Text>
+        {hasBackup ? (
+          <Pressable style={[styles.button, busy && styles.disabled]} onPress={restore} disabled={busy}>
+            <Text style={styles.buttonText}>Restore original</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {message ? <Text style={styles.message}>{message}</Text> : null}
+      <Text style={styles.hint}>0 = off, 10 = strongest. Width also centres the text (equal side margins). Dark starts at 1.</Text>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {flex: 1, backgroundColor: '#ffffff'},
-  content: {padding: 32, alignItems: 'center'},
-  header: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', alignSelf: 'stretch'},
-  title: {fontSize: 30, fontWeight: '700', color: '#000000'},
-  close: {padding: 8},
-  hint: {fontSize: 17, color: '#444444', marginVertical: 8, textAlign: 'center'},
-  diag: {fontSize: 15, color: '#444444', marginBottom: 4, fontFamily: 'monospace', textAlign: 'center'},
-  error: {fontSize: 19, color: '#000000', marginVertical: 12, textAlign: 'center'},
-  screen: {borderWidth: 2, borderColor: '#000000', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', marginVertical: 12},
-  label: {fontSize: 21, color: '#000000', marginTop: 16, alignSelf: 'flex-start'},
-  big: {fontSize: 24, fontWeight: '700', color: '#000000', marginHorizontal: 12},
-  levels: {flexDirection: 'row', flexWrap: 'wrap', alignSelf: 'stretch', marginTop: 8, alignItems: 'center'},
-  level: {borderWidth: 2, borderColor: '#000000', borderRadius: 8, minWidth: 56, height: 52, marginRight: 8, marginBottom: 8, alignItems: 'center', justifyContent: 'center'},
-  chip: {borderWidth: 2, borderColor: '#000000', borderRadius: 8, paddingHorizontal: 16, height: 52, marginRight: 8, marginBottom: 8, alignItems: 'center', justifyContent: 'center'},
-  levelOn: {backgroundColor: '#000000'},
-  levelText: {fontSize: 21, color: '#000000'},
-  levelOnText: {color: '#ffffff'},
-  generate: {marginTop: 20, borderWidth: 2, borderColor: '#000000', borderRadius: 10, paddingVertical: 14, paddingHorizontal: 28},
+  content: {paddingHorizontal: 12, paddingVertical: 8, alignItems: 'center'},
+  header: {flexDirection: 'row', alignItems: 'center', alignSelf: 'stretch', height: 44},
+  title: {fontSize: 24, fontWeight: '700', color: '#000000'},
+  page: {flex: 1, fontSize: 17, color: '#444444', textAlign: 'center'},
+  close: {paddingHorizontal: 8},
+  hint: {fontSize: 14, color: '#444444', marginVertical: 4, textAlign: 'center'},
+  error: {fontSize: 17, color: '#000000', marginVertical: 6, textAlign: 'center'},
+  message: {fontSize: 16, color: '#000000', marginVertical: 4, textAlign: 'center'},
+  screen: {borderWidth: 2, borderColor: '#000000', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', marginVertical: 6},
+  row: {flexDirection: 'row', alignItems: 'center', alignSelf: 'stretch', height: 50},
+  rowLabel: {width: 92, fontSize: 16, fontWeight: '700', color: '#000000'},
+  rowChips: {flex: 1, flexDirection: 'row', alignItems: 'center'},
+  chip: {flex: 1, height: 40, marginHorizontal: 2, borderWidth: 2, borderColor: '#000000', borderRadius: 6, alignItems: 'center', justifyContent: 'center'},
+  chipOn: {backgroundColor: '#000000'},
+  chipText: {fontSize: 16, color: '#000000'},
+  chipOnText: {color: '#ffffff'},
+  buttons: {flexDirection: 'row', alignSelf: 'stretch', marginTop: 8},
+  button: {flex: 1, marginHorizontal: 4, borderWidth: 2, borderColor: '#000000', borderRadius: 8, paddingVertical: 12, alignItems: 'center'},
+  buttonMain: {flex: 2},
+  buttonText: {fontSize: 19, fontWeight: '700', color: '#000000'},
   disabled: {opacity: 0.4},
-  generateText: {fontSize: 22, fontWeight: '700', color: '#000000'},
 });

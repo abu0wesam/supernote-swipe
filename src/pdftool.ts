@@ -4,27 +4,17 @@ import {DeviceEventEmitter, NativeModules} from 'react-native';
 
 export type SkewMode = 'off' | 'auto' | 'manual';
 
-export type ApplyResult = {pages: number; bytes: number; ms: number};
+/** Levels chosen in the tool: dark 1..10, the others 0 (off) to 10. */
+export type Levels = {dark: number; width: number; height: number; sharp: number; clean: number};
+
+export type ApplyOptions = Levels & {threads: number; mode: SkewMode; manual: number};
+
+export type ApplyResult = {pages: number; bytes: number; ms: number; threads: number};
 
 type Bridge = {
-  processImage(
-    inPath: string,
-    outPath: string,
-    darkLevel: number,
-    rotateDeg: number,
-    widthLevel: number,
-    heightLevel: number,
-  ): Promise<boolean>;
+  processImage(inPath: string, outPath: string, options: Levels & {rotate: number}): Promise<boolean>;
   detectSkew(inPath: string): Promise<number>;
-  applyToPdf(
-    path: string,
-    backupPath: string,
-    widthLevel: number,
-    heightLevel: number,
-    darkLevel: number,
-    mode: SkewMode,
-    manualDeg: number,
-  ): Promise<ApplyResult>;
+  applyToPdf(path: string, backupPath: string, options: ApplyOptions): Promise<ApplyResult>;
   restore(path: string, backupPath: string): Promise<boolean>;
 };
 
@@ -40,27 +30,14 @@ function bridge(): Bridge {
   return native;
 }
 
-/** Straightens, stretches the text, sharpens and darkens a picture of a page (the preview). */
-export const processImage = (
-  inPath: string,
-  outPath: string,
-  darkLevel: number,
-  rotateDeg: number,
-  widthLevel: number,
-  heightLevel: number,
-) => bridge().processImage(inPath, outPath, darkLevel, rotateDeg, widthLevel, heightLevel);
+/** Cleans, stretches, sharpens, darkens and straightens a picture of a page (the preview). */
+export const processImage = (inPath: string, outPath: string, levels: Levels, rotate: number) =>
+  bridge().processImage(inPath, outPath, {...levels, rotate});
 
 export const detectSkew = (inPath: string) => bridge().detectSkew(inPath);
 
-export const applyToPdf = (
-  path: string,
-  backupPath: string,
-  widthLevel: number,
-  heightLevel: number,
-  darkLevel: number,
-  mode: SkewMode,
-  manualDeg: number,
-) => bridge().applyToPdf(path, backupPath, widthLevel, heightLevel, darkLevel, mode, manualDeg);
+export const applyToPdf = (path: string, backupPath: string, options: ApplyOptions) =>
+  bridge().applyToPdf(path, backupPath, options);
 
 export const restoreBackup = (path: string, backupPath: string) => bridge().restore(path, backupPath);
 
