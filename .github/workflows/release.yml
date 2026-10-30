@@ -23,6 +23,8 @@ jobs:
           java-version: 17
       - name: Prepare checked PDF Tool patch and icon
         run: python3 tools/prepare_pdf_tool.py
+      - name: Prepare exact preview and bold icon 6
+        run: python3 tools/prepare_exact_preview.py
       - name: Test conversion sleep guard
         run: node tools/test_pdf_apply_guard.mjs
       - run: npm ci
