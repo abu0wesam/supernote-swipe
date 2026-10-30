@@ -26,6 +26,7 @@ import java.util.Locale
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicLong
 import java.util.zip.Deflater
 import kotlin.math.PI
 import kotlin.math.abs
@@ -200,6 +201,11 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
    */
   private fun runApplyOnce(path: String, backupPath: String, o: Opts, mode: String, manualDeg: Double, requested: Int): WritableMap {
     val started = System.currentTimeMillis()
+    var renderNs = 0L
+    var waitNs = 0L
+    var writeNs = 0L
+    val workNs = AtomicLong()
+    val packNs = AtomicLong()
     val src = File(path)
     if (!src.isFile) throw IllegalStateException("File not found: $path")
     val backup = File(backupPath)
@@ -234,8 +240,12 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
         fun flushOne() {
           if (cancelRequested) throw CancelledException()
           val job = pending.removeFirst()
+          val tWait = System.nanoTime()
           val packed = job.future.get()
+          waitNs += System.nanoTime() - tWait
+          val tWrite = System.nanoTime()
           writer.addPage(job.pw, job.ph, packed.w, packed.h, packed.z)
+          writeNs += System.nanoTime() - tWrite
           written++
           emit(written, pages)
         }
@@ -243,6 +253,7 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
         try {
           for (i in 0 until total) {
             if (cancelRequested) throw CancelledException()
+            val tRender = System.nanoTime()
             val page = renderer.openPage(i)
             val pw = page.width
             val ph = page.height
@@ -251,16 +262,23 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
             bmp.eraseColor(Color.WHITE)
             page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
             page.close()
+            renderNs += System.nanoTime() - tRender
 
             val future = pool.submit(
                 Callable<Packed> {
+                  val t0 = System.nanoTime()
                   val deg = when (mode) {
                     "auto" -> autoDegrees(bmp)
                     "manual" -> manualDeg
                     else -> 0.0
                   }
                   val g = enhance(bmp, deg, o)
-                  Packed(g.w, g.h, deflateBytes(g.bytes))
+                  val t1 = System.nanoTime()
+                  val z = deflateBytes(g.bytes)
+                  val t2 = System.nanoTime()
+                  workNs.addAndGet(t1 - t0)
+                  packNs.addAndGet(t2 - t1)
+                  Packed(g.w, g.h, z)
                 })
             pending.addLast(Job(pw, ph, future))
             while (pending.size >= workers + 1) flushOne()
@@ -299,11 +317,17 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
       work.delete()
     }
 
+    val perPage = max(1, total).toDouble() * 1e6
     val result = Arguments.createMap()
     result.putInt("pages", total)
     result.putInt("threads", used)
     result.putDouble("bytes", src.length().toDouble())
     result.putDouble("ms", (System.currentTimeMillis() - started).toDouble())
+    result.putDouble("renderMs", renderNs / perPage)
+    result.putDouble("workMs", workNs.get() / perPage)
+    result.putDouble("packMs", packNs.get() / perPage)
+    result.putDouble("waitMs", waitNs / perPage)
+    result.putDouble("writeMs", writeNs / perPage)
     return result
   }
 
@@ -334,6 +358,20 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
     /** At the last level the text ends this close to the page edge (share of the page). */
     private const val EDGE = 0.02
 
+    /** Deflate is lossless at every level; level 1 is much faster than 6 and the pixels are identical. */
+    private const val DEFLATE_LEVEL = 1
+
+    /** One reusable buffer per thread for the temporary pass of the 3 x 3 filters (always fully overwritten before it is read). */
+    private val scratchHolder = ThreadLocal<ByteArray>()
+
+    private fun scratch(size: Int): ByteArray {
+      val current = scratchHolder.get()
+      if (current != null && current.size >= size) return current
+      val fresh = ByteArray(size)
+      scratchHolder.set(fresh)
+      return fresh
+    }
+
     private fun copyFile(from: File, to: File) {
       FileInputStream(from).use { input ->
         FileOutputStream(to).use { output ->
@@ -349,7 +387,7 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
     }
 
     private fun deflateBytes(data: ByteArray): ByteArray {
-      val deflater = Deflater(6)
+      val deflater = Deflater(DEFLATE_LEVEL)
       deflater.setInput(data)
       deflater.finish()
       val bytes = ByteArrayOutputStream(data.size / 8 + 1024)
@@ -592,7 +630,7 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
      * above a small threshold, so edges of letters get crisper and faint noise is not amplified.
      */
     private fun sharpenSmart(g: ByteArray, w: Int, h: Int, level: Int): ByteArray {
-      val across = ByteArray(w * h)
+      val across = scratch(w * h)
       for (y in 0 until h) {
         val row = y * w
         for (x in 0 until w) {
@@ -663,16 +701,23 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
       return out
     }
 
-    private fun blend(a: ByteArray, b: ByteArray, weightOfB: Double): ByteArray =
-        ByteArray(a.size) { i ->
-          val x = a[i].toInt() and 0xFF
-          val y = b[i].toInt() and 0xFF
-          (x + (y - x) * weightOfB).roundToInt().toByte()
+    /**
+     * Same result as computing (x + (y - x) * weightOfB) rounded for every pixel, but the 65536 possible
+     * (x, y) pairs are computed once with that very expression and then looked up.
+     */
+    private fun blend(a: ByteArray, b: ByteArray, weightOfB: Double): ByteArray {
+      val table = ByteArray(256 * 256)
+      for (x in 0..255) {
+        for (y in 0..255) {
+          table[(x shl 8) or y] = (x + (y - x) * weightOfB).roundToInt().toByte()
         }
+      }
+      return ByteArray(a.size) { i -> table[((a[i].toInt() and 0xFF) shl 8) or (b[i].toInt() and 0xFF)] }
+    }
 
     /** Each pixel takes the darkest value of its 3 x 3 neighbourhood: dark strokes grow by one pixel on every side. */
     private fun minFilter(src: ByteArray, w: Int, h: Int): ByteArray {
-      val across = ByteArray(w * h)
+      val across = scratch(w * h)
       for (y in 0 until h) {
         val row = y * w
         for (x in 0 until w) {
