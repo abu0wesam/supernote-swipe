@@ -25,6 +25,8 @@ jobs:
         run: python3 tools/prepare_pdf_tool.py
       - name: Prepare exact preview and bold icon 6
         run: python3 tools/prepare_exact_preview.py
+      - name: Prepare frame-aware text block
+        run: python3 tools/prepare_frame_fix.py
       - name: Prepare Text toolbar icon
         run: python3 tools/prepare_text_assets.py
       - name: Test conversion sleep guard

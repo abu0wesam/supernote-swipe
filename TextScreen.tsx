@@ -1,19 +1,25 @@
 /**
  * Text tool: formats a reflowable EPUB into a new, separately named copy (font, size, weight,
  * line spacing, margins, alignment, direction). The original book is never changed.
+ * An approximate preview of the page text answers every change at once.
  *
  * @format
  */
 
 import React, {useEffect, useState} from 'react';
-import {Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
-import {NativeUIUtils, PluginFileAPI, PluginManager} from 'sn-plugin-lib';
+import {Dimensions, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
+import type {TextStyle, ViewStyle} from 'react-native';
+import {NativeUIUtils, PluginDocAPI, PluginFileAPI, PluginManager} from 'sn-plugin-lib';
+import {MANTA_ASPECT} from './src/convert';
 import {pageInfo} from './src/pageflip';
 import {buildCss, defaults} from './src/textCss';
 import type {TextSettings} from './src/textCss';
 import {cancelText, exportTextCopy, inspectEpub, loadTextSettings, saveTextSettings, textAvailable} from './src/textTool';
 
 type Option = [string, string | number];
+
+const DISPLAY_HINT =
+  'If the copy looks unchanged in the reader, open its Display Settings and choose "Document default setting": with "User-defined" the reader ignores most of the book formatting.';
 
 function Choices({label, value, values, disabled, onChange}: {label: string; value: string | number; values: Option[]; disabled: boolean; onChange: (value: string | number) => void}) {
   return (
@@ -40,6 +46,7 @@ export default function TextScreen(): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('Reading the open EPUB...');
   const [output, setOutput] = useState<string | null>(null);
+  const [sample, setSample] = useState('');
 
   useEffect(() => {
     let alive = true;
@@ -61,7 +68,15 @@ export default function TextScreen(): React.JSX.Element {
         setSettings(saved);
         setChapters(result.chapters);
         setReady(true);
-        setMessage('The original stays unchanged. Reader settings may override book formatting.');
+        setMessage('The original stays unchanged.');
+        try {
+          const res: any = await (PluginDocAPI as any).getCurrentDocText(info.current);
+          if (alive && res?.success && typeof res.result === 'string') {
+            setSample(res.result.replace(/\s+/g, ' ').trim().slice(0, 1800));
+          }
+        } catch {
+          // the preview is optional
+        }
       } catch (e: any) {
         if (alive) {
           setMessage(String(e?.message ?? e));
@@ -98,7 +113,7 @@ export default function TextScreen(): React.JSX.Element {
     setOutput(null);
     try {
       const ok = await NativeUIUtils.showRattaDialog(
-        'Create a separately named EPUB copy? The original is not changed. Review the result in the device reader; this is not a matching preview.',
+        'Create a separately named EPUB copy? The original is not changed. Check the result in the device reader: the preview here is only approximate.',
         'Cancel',
         'Create copy',
         false,
@@ -109,7 +124,7 @@ export default function TextScreen(): React.JSX.Element {
       setMessage('Creating the EPUB copy...');
       const result = await exportTextCopy(path, settings);
       setOutput(result.path);
-      setMessage(`Created ${result.chapters} chapters. Original unchanged.\n${result.path}`);
+      setMessage(`Created ${result.chapters} chapters. Original unchanged.\n${result.path}\n${DISPLAY_HINT}`);
       try {
         await saveTextSettings(path, settings);
       } catch {
@@ -138,6 +153,23 @@ export default function TextScreen(): React.JSX.Element {
 
   const disabled = busy || !ready;
   const nothingToApply = !buildCss(settings);
+  const baseSize = settings.size || 18;
+  const previewWidth = Math.min(Dimensions.get('window').width - 32, 560);
+  const previewFrame: ViewStyle = {
+    width: previewWidth,
+    height: Math.round(previewWidth / MANTA_ASPECT),
+    paddingHorizontal: Math.round((previewWidth * (settings.marginH >= 0 ? settings.marginH : 5)) / 100),
+    paddingVertical: Math.round(baseSize * (settings.marginV >= 0 ? settings.marginV : 1)),
+    direction: settings.direction === 'original' ? 'inherit' : settings.direction,
+  };
+  const previewText: TextStyle = {
+    fontFamily: settings.font === 'original' ? undefined : settings.font,
+    fontSize: baseSize,
+    fontWeight: (settings.weight ? String(settings.weight) : '400') as TextStyle['fontWeight'],
+    lineHeight: Math.round(baseSize * (settings.line || 1.5)),
+    textAlign: settings.align === 'original' ? 'auto' : settings.align,
+    color: '#000000',
+  };
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -148,7 +180,10 @@ export default function TextScreen(): React.JSX.Element {
         </Pressable>
       </View>
       <Text style={styles.note}>{ready ? `${path.split('/').pop()} - ${chapters} chapters` : 'EPUB formatting'}</Text>
-      <Text style={styles.note}>Creates a text-based EPUB copy, not a PDF. No exact reader preview is claimed.</Text>
+      <Text style={styles.note}>Approximate preview of the text of this page. The reader lays text out in its own way, so check the created copy there.</Text>
+      <View style={[styles.preview, previewFrame]}>
+        <Text style={previewText}>{sample || 'No page text is available for the preview.'}</Text>
+      </View>
       <Choices label="Font" value={settings.font} values={[['Original', 'original'], ['Serif', 'serif'], ['Sans', 'sans-serif']]} disabled={disabled} onChange={v => update('font', v)} />
       <Choices label="Size (px)" value={settings.size} values={numbers([0, 16, 18, 20, 22, 24, 26, 28, 32, 36, 40], 0)} disabled={disabled} onChange={v => update('size', v)} />
       <Choices label="Weight" value={settings.weight} values={[['Original', 0], ['Normal', 400], ['Medium', 500], ['Bold', 700]]} disabled={disabled} onChange={v => update('weight', v)} />
@@ -197,6 +232,7 @@ const styles = StyleSheet.create({
   header: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12},
   title: {fontSize: 24, fontWeight: '700', color: '#000000'},
   note: {fontSize: 16, color: '#000000', marginVertical: 8},
+  preview: {borderWidth: 2, borderColor: '#000000', overflow: 'hidden', alignSelf: 'center', marginVertical: 8},
   row: {marginVertical: 6},
   label: {fontSize: 17, fontWeight: '700', color: '#000000', marginBottom: 4},
   choices: {flexDirection: 'row', flexWrap: 'wrap'},

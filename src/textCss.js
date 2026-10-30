@@ -53,6 +53,7 @@ export function buildCss(input) {
     rules.push(`body,body p,body li,body dd,body dt,body blockquote,body div{${text.join(';')}}`);
   }
   if (body.length) {
+    rules.push('@page{margin:0}');
     rules.push(`body{${body.join(';')}}`);
   }
   return rules.join('\n');
