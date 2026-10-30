@@ -1,8 +1,8 @@
 /**
  * Page tool: shows the page open in the reader and lets the user choose how
- * much to widen it (5 levels), how much to darken it (10 levels) and whether to
- * straighten tilted scans. The result can be applied to the same file; the
- * original is kept and can be restored.
+ * far to stretch the text towards the page edges (5 levels), how much to darken
+ * it (10 levels) and whether to straighten tilted scans. The result can be
+ * applied to the same file; the original is kept and can be restored.
  *
  * @format
  */
@@ -10,7 +10,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {Dimensions, Image, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {FileUtils, NativeUIUtils, PluginCommAPI, PluginDocAPI, PluginFileAPI, PluginManager} from 'sn-plugin-lib';
-import {DARK_LEVELS, MANTA_ASPECT, WIDTH_LEVELS, darkExponent, fillScale, widthScale} from './src/convert';
+import {DARK_LEVELS, MANTA_ASPECT, WIDTH_LEVELS} from './src/convert';
 import {PageInfo, pageInfo} from './src/pageflip';
 import {
   SkewMode,
@@ -26,6 +26,9 @@ import {
 type Raw = {path: string; dir: string; aspect: number; detail: string};
 
 let lastRawPath: string | null = null;
+
+/** Height, in pixels, of the page picture: the same as the pages of the new PDF. */
+const PAGE_PIXELS = 2048;
 
 /** The real size of a page: the file API first, then the size the reader shows. */
 async function readPageSize(path: string, page: number): Promise<{w: number; h: number; source: string} | null> {
@@ -66,21 +69,19 @@ async function renderRaw(path: string, page: number): Promise<Raw> {
   }
   await removeFile(lastRawPath);
   const real = await readPageSize(path, page);
-  const width = 960;
-  const height = real ? Math.min(5120, Math.max(1, Math.round((width * real.h) / real.w))) : 1280;
+  // The picture has the page's own proportions and the height of the pages of the new PDF.
+  const height = PAGE_PIXELS;
+  const width = real ? Math.min(5120, Math.max(1, Math.round((height * real.w) / real.h))) : 1536;
   const out = `${dir}/preview_${Date.now()}.png`;
   const res: any = await (PluginDocAPI as any).generateCurrentDocImage(page, out, {width, height}, 0);
   if (!res?.success) {
     throw new Error(res?.error?.message ?? 'Could not draw the page.');
   }
   lastRawPath = out;
-  const size = await new Promise<{width: number; height: number}>((resolve, reject) =>
-    Image.getSize(`file://${out}`, (w, h) => resolve({width: w, height: h}), reject),
-  );
-  const aspect = real ? real.w / real.h : size.width / size.height;
+  const aspect = width / height;
   const detail = real
     ? `Page ${Math.round(real.w)}\u00d7${Math.round(real.h)} (${real.source}) \u00b7 proportion ${aspect.toFixed(3)}`
-    : `Page size unknown \u00b7 image ${size.width}\u00d7${size.height}`;
+    : `Page size unknown \u00b7 picture ${width}\u00d7${height}`;
   return {path: out, dir, aspect, detail};
 }
 
@@ -143,8 +144,7 @@ export default function ConvertScreen(): React.JSX.Element {
         }
         setRaw(r);
         if (nativeAvailable()) {
-          const dir = r.dir;
-          setHasBackup(await FileUtils.exists(backupPathFor(dir, i.path)));
+          setHasBackup(await FileUtils.exists(backupPathFor(r.dir, i.path)));
           detectSkew(r.path)
             .then(d => alive && setDetected(d))
             .catch(() => undefined);
@@ -162,7 +162,7 @@ export default function ConvertScreen(): React.JSX.Element {
 
   const degrees = skew === 'off' ? 0 : skew === 'auto' ? detected ?? 0 : manualDeg;
 
-  // The preview with the real darkening and straightening, a moment after a level changes.
+  // The preview with the real widening, darkening and straightening, a moment after a level changes.
   useEffect(() => {
     if (!raw || !native) {
       return;
@@ -171,7 +171,7 @@ export default function ConvertScreen(): React.JSX.Element {
     const timer = setTimeout(async () => {
       try {
         const out = `${raw.dir}/proc_${Date.now()}.png`;
-        await processImage(raw.path, out, darkExponent(darkLevel), degrees);
+        await processImage(raw.path, out, darkLevel, degrees, widthLevel);
         if (!alive) {
           await removeFile(out);
           return;
@@ -190,18 +190,15 @@ export default function ConvertScreen(): React.JSX.Element {
       alive = false;
       clearTimeout(timer);
     };
-  }, [raw, native, darkLevel, degrees]);
+  }, [raw, native, darkLevel, degrees, widthLevel]);
 
   const win = Dimensions.get('window');
   const boxH = Math.min(win.height * 0.46, (win.width - 64) / MANTA_ASPECT);
   const boxW = boxH * MANTA_ASPECT;
   const pageAspect = raw ? raw.aspect : MANTA_ASPECT;
-  const fill = fillScale(pageAspect, MANTA_ASPECT);
-  const scale = widthScale(widthLevel, fill);
   const fitsHeight = pageAspect <= MANTA_ASPECT;
   const baseW = fitsHeight ? boxH * pageAspect : boxW;
   const baseH = fitsHeight ? boxH : boxW / pageAspect;
-  const alreadyWide = !!raw && fill <= 1.001;
   const shownUri = procPath ? `file://${procPath}` : raw ? `file://${raw.path}` : null;
 
   const backupFor = async (path: string) => {
@@ -235,7 +232,7 @@ export default function ConvertScreen(): React.JSX.Element {
     const stop = onProgress((done, total) => setProgress(`${done} / ${total}`));
     try {
       const backup = await backupFor(info.path);
-      const res = await applyToPdf(info.path, backup, scale, darkExponent(darkLevel), skew, manualDeg);
+      const res = await applyToPdf(info.path, backup, widthLevel, darkLevel, skew, manualDeg);
       setHasBackup(true);
       await (PluginFileAPI as any).openFile(info.path, info.current);
       setMessage(`Done: ${res.pages} pages. The file is reloaded in the reader.`);
@@ -285,24 +282,20 @@ export default function ConvertScreen(): React.JSX.Element {
         </Text>
       ) : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
-      {!native ? <Text style={styles.error}>This build has no native PDF module: darkening and applying are unavailable.</Text> : null}
+      {!native ? <Text style={styles.error}>This build has no native PDF module: the preview and applying are unavailable.</Text> : null}
 
       <View style={[styles.screen, {width: boxW, height: boxH}]}>
         {shownUri ? (
-          <Image source={{uri: shownUri}} resizeMode="stretch" style={{width: baseW * scale, height: baseH}} />
+          <Image source={{uri: shownUri}} resizeMode="stretch" style={{width: baseW, height: baseH}} />
         ) : (
           <Text style={styles.hint}>{error ? '' : 'Drawing the page\u2026'}</Text>
         )}
       </View>
-      {raw ? (
-        <Text style={styles.diag}>
-          {raw.detail} \u00b7 screen {MANTA_ASPECT.toFixed(3)} \u00b7 full width \u00d7{fill.toFixed(3)}
-        </Text>
-      ) : null}
-      {alreadyWide ? <Text style={styles.hint}>This page is already as wide as the screen, so the width levels change nothing.</Text> : null}
+      {raw ? <Text style={styles.diag}>{raw.detail}</Text> : null}
 
-      <Text style={styles.label}>Width: level {widthLevel + 1} of {WIDTH_LEVELS} (+{Math.round((scale - 1) * 100)}%)</Text>
+      <Text style={styles.label}>Text width: level {widthLevel + 1} of {WIDTH_LEVELS}</Text>
       <LevelRow count={WIDTH_LEVELS} first={0} value={widthLevel} onPick={setWidthLevel} />
+      <Text style={styles.hint}>The text itself is stretched towards the page edges; the page keeps its size. Level 1 leaves it as it is.</Text>
 
       <Text style={styles.label}>Darkness: level {darkLevel} of {DARK_LEVELS}</Text>
       <LevelRow count={DARK_LEVELS} first={1} value={darkLevel} onPick={setDarkLevel} />
@@ -340,7 +333,7 @@ export default function ConvertScreen(): React.JSX.Element {
           <Text style={styles.generateText}>Restore original</Text>
         </Pressable>
       ) : null}
-      <Text style={styles.hint}>Handwriting you already wrote on this PDF may move when the page is widened or straightened.</Text>
+      <Text style={styles.hint}>Handwriting you already wrote on this PDF may move when the page is changed.</Text>
     </ScrollView>
   );
 }

@@ -5,13 +5,13 @@ import {DeviceEventEmitter, NativeModules} from 'react-native';
 export type SkewMode = 'off' | 'auto' | 'manual';
 
 type Bridge = {
-  processImage(inPath: string, outPath: string, exponent: number, rotateDeg: number): Promise<boolean>;
+  processImage(inPath: string, outPath: string, darkLevel: number, rotateDeg: number, widthLevel: number): Promise<boolean>;
   detectSkew(inPath: string): Promise<number>;
   applyToPdf(
     path: string,
     backupPath: string,
-    scaleX: number,
-    exponent: number,
+    widthLevel: number,
+    darkLevel: number,
     mode: SkewMode,
     manualDeg: number,
   ): Promise<{pages: number; bytes: number}>;
@@ -30,19 +30,20 @@ function bridge(): Bridge {
   return native;
 }
 
-export const processImage = (inPath: string, outPath: string, exponent: number, rotateDeg: number) =>
-  bridge().processImage(inPath, outPath, exponent, rotateDeg);
+/** Straightens, widens the text and darkens a picture of a page (the preview). */
+export const processImage = (inPath: string, outPath: string, darkLevel: number, rotateDeg: number, widthLevel: number) =>
+  bridge().processImage(inPath, outPath, darkLevel, rotateDeg, widthLevel);
 
 export const detectSkew = (inPath: string) => bridge().detectSkew(inPath);
 
 export const applyToPdf = (
   path: string,
   backupPath: string,
-  scaleX: number,
-  exponent: number,
+  widthLevel: number,
+  darkLevel: number,
   mode: SkewMode,
   manualDeg: number,
-) => bridge().applyToPdf(path, backupPath, scaleX, exponent, mode, manualDeg);
+) => bridge().applyToPdf(path, backupPath, widthLevel, darkLevel, mode, manualDeg);
 
 export const restoreBackup = (path: string, backupPath: string) => bridge().restore(path, backupPath);
 

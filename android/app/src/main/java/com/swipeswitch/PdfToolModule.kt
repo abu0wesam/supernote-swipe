@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import com.facebook.react.bridge.Arguments
@@ -33,11 +34,14 @@ import kotlin.math.sin
 
 /**
  * Image work for the PDF Tool plugin, with no third-party library:
- *  - processImage: darken (and optionally rotate) a PNG, for the preview;
+ *  - processImage: straighten, widen the text and darken a PNG, for the preview;
  *  - detectSkew: how much a scanned page is tilted;
- *  - applyToPdf: redraw every page of a PDF (wider, darker, straightened) and write it over the file,
+ *  - applyToPdf: redraw every page of a PDF the same way and write it over the file,
  *    after keeping a copy of the original;
  *  - restore: put the kept copy back.
+ *
+ * "Widen" keeps the page size and stretches the printed area (the text) towards the left and
+ * right edges of the page, level 0 = as it is, level 4 = almost to the edges.
  */
 class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBaseJavaModule(ctx) {
 
@@ -46,22 +50,14 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
   // ---------------------------------------------------------------- preview
 
   @ReactMethod
-  fun processImage(inPath: String, outPath: String, exponent: Double, rotateDeg: Double, promise: Promise) {
+  fun processImage(inPath: String, outPath: String, darkLevel: Int, rotateDeg: Double, widthLevel: Int, promise: Promise) {
     Thread {
       try {
         val opts = BitmapFactory.Options()
         opts.inMutable = true
-        var bmp = BitmapFactory.decodeFile(inPath, opts) ?: throw IllegalStateException("Cannot read $inPath")
-        if (abs(rotateDeg) >= 0.05) {
-          val rotated = rotate(bmp, rotateDeg)
-          bmp.recycle()
-          bmp = rotated
-        }
-        val w = bmp.width
-        val h = bmp.height
-        val gray = grayBytes(bmp, lut(exponent))
-        bmp.recycle()
-        val out = grayToBitmap(gray, w, h)
+        val decoded = BitmapFactory.decodeFile(inPath, opts) ?: throw IllegalStateException("Cannot read $inPath")
+        val result = enhance(decoded, rotateDeg, widthLevel, darkLevel)
+        val out = grayToBitmap(result.bytes, result.w, result.h)
         FileOutputStream(outPath).use { stream -> out.compress(Bitmap.CompressFormat.PNG, 100, stream) }
         out.recycle()
         promise.resolve(true)
@@ -93,15 +89,15 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
   fun applyToPdf(
       path: String,
       backupPath: String,
-      scaleX: Double,
-      exponent: Double,
+      widthLevel: Int,
+      darkLevel: Int,
       mode: String,
       manualDeg: Double,
       promise: Promise
   ) {
     Thread {
       try {
-        promise.resolve(runApply(path, backupPath, scaleX, exponent, mode, manualDeg))
+        promise.resolve(runApply(path, backupPath, widthLevel, darkLevel, mode, manualDeg))
       } catch (e: Throwable) {
         promise.reject("E_APPLY", e.message ?: e.toString())
       }
@@ -126,8 +122,8 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
   private fun runApply(
       path: String,
       backupPath: String,
-      scaleX: Double,
-      exponent: Double,
+      widthLevel: Int,
+      darkLevel: Int,
       mode: String,
       manualDeg: Double
   ): WritableMap {
@@ -136,7 +132,6 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
     val backup = File(backupPath)
     backup.parentFile?.mkdirs()
     val work = File(backup.parentFile, "work_output.pdf")
-    val table = lut(exponent)
 
     var total = 0
     val pfd = ParcelFileDescriptor.open(src, ParcelFileDescriptor.MODE_READ_ONLY)
@@ -150,10 +145,9 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
             val page = renderer.openPage(i)
             val pw = page.width
             val ph = page.height
-            val wPx = min(MAX_WIDTH, max(1, (TARGET_HEIGHT.toDouble() * pw / ph * scaleX).roundToInt()))
-            var bmp = Bitmap.createBitmap(wPx, TARGET_HEIGHT, Bitmap.Config.ARGB_8888)
+            val wPx = min(MAX_WIDTH, max(1, (TARGET_HEIGHT.toDouble() * pw / ph).roundToInt()))
+            val bmp = Bitmap.createBitmap(wPx, TARGET_HEIGHT, Bitmap.Config.ARGB_8888)
             bmp.eraseColor(Color.WHITE)
-            // No transform: the page is stretched to the bitmap, which is wider than the page by scaleX.
             page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
             page.close()
 
@@ -162,14 +156,8 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
               "manual" -> manualDeg
               else -> 0.0
             }
-            if (abs(deg) >= 0.05) {
-              val rotated = rotate(bmp, deg)
-              bmp.recycle()
-              bmp = rotated
-            }
-            val gray = grayBytes(bmp, table)
-            bmp.recycle()
-            writer.addPage((pw * scaleX).roundToInt(), ph, wPx, TARGET_HEIGHT, gray)
+            val result = enhance(bmp, deg, widthLevel, darkLevel)
+            writer.addPage(pw, ph, result.w, result.h, result.bytes)
             emit(i + 1, total)
           }
           writer.finish()
@@ -212,10 +200,18 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
     }
   }
 
+  private class Gray(val w: Int, val h: Int, val bytes: ByteArray)
+
   companion object {
     /** Pixels of a page's height in the new PDF (the Manta screen is 2560 high). */
     private const val TARGET_HEIGHT = 2048
     private const val MAX_WIDTH = 4096
+
+    /** Number of steps between width level 0 and the last level (5 levels). */
+    private const val WIDTH_STEPS = 4
+
+    /** At the last width level the text ends this close to the page edge (share of the width). */
+    private const val EDGE = 0.02
 
     private fun copyFile(from: File, to: File) {
       FileInputStream(from).use { input ->
@@ -231,12 +227,32 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
       }
     }
 
-    /** pixel = 255 * (pixel / 255) ^ exponent. An exponent above 1 darkens the grays of the letters. */
-    private fun lut(exponent: Double): IntArray =
-        IntArray(256) { v -> (255.0 * (v / 255.0).pow(exponent)).roundToInt().coerceIn(0, 255) }
+    /** Straighten, widen, then darken. The input bitmap is recycled. */
+    private fun enhance(input: Bitmap, rotateDeg: Double, widthLevel: Int, darkLevel: Int): Gray {
+      var bmp = input
+      if (abs(rotateDeg) >= 0.05) {
+        val rotated = rotate(bmp, rotateDeg)
+        bmp.recycle()
+        bmp = rotated
+      }
+      if (widthLevel > 0) {
+        val widened = widen(bmp, widthLevel)
+        if (widened !== bmp) {
+          bmp.recycle()
+          bmp = widened
+        }
+      }
+      val w = bmp.width
+      val h = bmp.height
+      val raw = grayBytes(bmp)
+      bmp.recycle()
+      return Gray(w, h, darken(raw, w, h, darkLevel))
+    }
 
-    /** 8-bit gray of a bitmap through the lookup table (transparent parts count as white). */
-    private fun grayBytes(bmp: Bitmap, table: IntArray): ByteArray {
+    // ---------------------------------------------------------------- gray
+
+    /** 8-bit gray of a bitmap (transparent parts count as white). */
+    private fun grayBytes(bmp: Bitmap): ByteArray {
       val w = bmp.width
       val h = bmp.height
       val px = IntArray(w * h)
@@ -246,8 +262,7 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
         val p = px[i]
         val a = (p ushr 24) and 0xFF
         val g0 = (((p shr 16) and 0xFF) * 299 + ((p shr 8) and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
-        val g = 255 - ((255 - g0) * a) / 255
-        out[i] = table[g].toByte()
+        out[i] = (255 - ((255 - g0) * a) / 255).toByte()
       }
       return out
     }
@@ -260,6 +275,148 @@ class PdfToolModule(private val ctx: ReactApplicationContext) : ReactContextBase
       }
       return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
     }
+
+    // ------------------------------------------------------------- darkening
+
+    /**
+     * Darkness level 1..10:
+     *  1. the paper is made pure white (its brightness is read from the page);
+     *  2. a curve pushes every gray towards black, more with each level;
+     *  3. from level 3 the strokes are made thicker (1 px at level 6, 2 px at level 10, blended in between).
+     */
+    private fun darken(gray: ByteArray, w: Int, h: Int, level: Int): ByteArray {
+      if (level <= 0) return gray
+      val hist = IntArray(256)
+      for (b in gray) hist[b.toInt() and 0xFF]++
+      val target = (gray.size * 0.7).toLong()
+      var acc = 0L
+      var white = 255
+      for (v in 0..255) {
+        acc += hist[v]
+        if (acc >= target) {
+          white = v
+          break
+        }
+      }
+      white = max(150, white)
+      val exponent = 1.0 + 0.4 * level
+      val table = IntArray(256) { v ->
+        val n = min(1.0, v / white.toDouble())
+        (255.0 * n.pow(exponent)).roundToInt().coerceIn(0, 255)
+      }
+      val curved = ByteArray(gray.size) { i -> table[gray[i].toInt() and 0xFF].toByte() }
+
+      var out = curved
+      val w1 = ((level - 2) / 4.0).coerceIn(0.0, 1.0)
+      if (w1 > 0.0) out = blend(out, minFilter(curved, w, h, 1), w1)
+      val w2 = ((level - 6) / 4.0).coerceIn(0.0, 1.0)
+      if (w2 > 0.0) out = blend(out, minFilter(curved, w, h, 2), w2)
+      return out
+    }
+
+    private fun blend(a: ByteArray, b: ByteArray, weightOfB: Double): ByteArray =
+        ByteArray(a.size) { i ->
+          val x = a[i].toInt() and 0xFF
+          val y = b[i].toInt() and 0xFF
+          (x + (y - x) * weightOfB).roundToInt().toByte()
+        }
+
+    /** Each pixel takes the darkest value within r pixels: dark strokes grow by r pixels on every side. */
+    private fun minFilter(src: ByteArray, w: Int, h: Int, r: Int): ByteArray {
+      val tmp = ByteArray(w * h)
+      for (y in 0 until h) {
+        val row = y * w
+        for (x in 0 until w) {
+          var m = 255
+          val x0 = max(0, x - r)
+          val x1 = min(w - 1, x + r)
+          for (k in x0..x1) {
+            val v = src[row + k].toInt() and 0xFF
+            if (v < m) m = v
+          }
+          tmp[row + x] = m.toByte()
+        }
+      }
+      val out = ByteArray(w * h)
+      for (y in 0 until h) {
+        val y0 = max(0, y - r)
+        val y1 = min(h - 1, y + r)
+        for (x in 0 until w) {
+          var m = 255
+          for (k in y0..y1) {
+            val v = tmp[k * w + x].toInt() and 0xFF
+            if (v < m) m = v
+          }
+          out[y * w + x] = m.toByte()
+        }
+      }
+      return out
+    }
+
+    // ---------------------------------------------------------------- widening
+
+    /**
+     * Stretches the printed area to the left and right: the part of the page between the first and
+     * the last column that holds ink is moved towards the page edges (level / 4 of the way to
+     * the edge margin); the blank strips outside it shrink. Same page size, same height.
+     */
+    private fun widen(src: Bitmap, level: Int): Bitmap {
+      val box = contentColumns(src) ?: return src
+      val t = min(level, WIDTH_STEPS) / WIDTH_STEPS.toDouble()
+      val cl = box.first
+      val cr = box.second
+      val nl = cl + (min(cl, EDGE) - cl) * t
+      val nr = cr + (max(cr, 1.0 - EDGE) - cr) * t
+      if (nl == cl && nr == cr) return src
+
+      val w = src.width
+      val h = src.height
+      val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+      val canvas = Canvas(out)
+      canvas.drawColor(Color.WHITE)
+      val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+      fun x(f: Double): Int = (f * w).roundToInt().coerceIn(0, w)
+      val from = intArrayOf(0, x(cl), x(cr), w)
+      val to = intArrayOf(0, x(nl), x(nr), w)
+      for (i in 0..2) {
+        if (from[i + 1] > from[i] && to[i + 1] > to[i]) {
+          canvas.drawBitmap(src, Rect(from[i], 0, from[i + 1], h), Rect(to[i], 0, to[i + 1], h), paint)
+        }
+      }
+      return out
+    }
+
+    /** The first and last columns holding ink, as shares of the width; null for a page with almost no ink. */
+    private fun contentColumns(src: Bitmap): Pair<Double, Double>? {
+      val w = 600
+      val h = max(1, (src.height.toDouble() * w / src.width).roundToInt())
+      val small = Bitmap.createScaledBitmap(src, w, h, true)
+      val px = IntArray(w * h)
+      small.getPixels(px, 0, w, 0, 0, w, h)
+      if (small !== src) small.recycle()
+      val cols = IntArray(w)
+      for (y in 0 until h) {
+        for (x in 0 until w) {
+          val p = px[y * w + x]
+          val a = (p ushr 24) and 0xFF
+          val g0 = (((p shr 16) and 0xFF) * 299 + ((p shr 8) and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
+          val g = 255 - ((255 - g0) * a) / 255
+          if (g < 170) cols[x]++
+        }
+      }
+      val need = max(3, (h * 0.008).roundToInt())
+      var left = 0
+      while (left < w && cols[left] < need) left++
+      var right = w - 1
+      while (right >= 0 && cols[right] < need) right--
+      if (left >= right) return null
+      val cl = left.toDouble() / w
+      val cr = (right + 1).toDouble() / w
+      if (cr - cl < 0.3) return null
+      return Pair(cl, cr)
+    }
+
+    // ---------------------------------------------------------------- tilt
 
     /** Rotates clockwise around the centre, on white. */
     private fun rotate(src: Bitmap, deg: Double): Bitmap {
