@@ -66,7 +66,7 @@ fontsRef.current=fl;if(live){setFonts(fl);setCfg(c)}return[c,fl]}).catch(functio
 .then(function(cf){if(!live)return;setMsg('Reading the book\u2026');return BK.loadBook(path).then(function(){setReady(true);var fr=tot>0?Math.max(0,Math.min(1,cur/tot)):0;fracRef.current=fr;return relayout(cf[0],cf[1],-1,fr)})})
 .catch(function(e){if(live)setMsg('Failed: '+(e&&e.message?e.message:e))});
 return function(){live=false}},[dir]);
-r.useEffect(function(){var sub=l.DeviceEventEmitter.addListener('BookPdfProgress',function(e){if(e.stage==='export')setProg(e.done+' / '+e.total);else if(e.stage==='read')setMsg('Reading the book\u2026 '+e.done+' / '+e.total)});return function(){sub.remove()}},[]);
+r.useEffect(function(){var sub=l.DeviceEventEmitter.addListener('BookPdfProgress',function(e){if(e.stage==='export')setProg(e.done+' / '+e.total);else if(e.stage==='read')setMsg('Reading the book\u2026 '+e.done+' / '+e.total);else if(e.stage==='layout')setMsg('Laying out... '+e.done+' / '+e.total)});return function(){sub.remove()}},[]);
 var key=JSON.stringify(mkSettings(cfg,fonts));
 var first=r.useRef(true);
 r.useEffect(function(){if(!ready){return}
@@ -89,7 +89,7 @@ setWorking(true);setProg('starting\u2026');setMsg(null);
 var cur=pgRef.current;
 var sleepOn=function(v){try{var f=SDK.PluginCommAPI.setSystemDormancyState;if(typeof f==='function')return Promise.resolve(f.call(SDK.PluginCommAPI,v)).catch(function(){})}catch(e){}return Promise.resolve()};
 return sleepOn(true).then(function(){return BK.exportPdf(target)}).then(function(res){
-setProg('');setMsg('Done: '+res.pages+' pages, '+(res.bytes/1048576).toFixed(1)+' MB in '+Math.round(res.ms/1000)+' s.\n'+res.path);
+setProg('');setMsg('Done: '+res.pages+' pages, '+(res.bytes/1048576).toFixed(1)+' MB in '+Math.round(res.ms/1000)+' s'+(res.outline?', '+res.outline+' bookmarks':'')+'.\n'+res.path);
 return sleepOn(false).then(function(){return SDK.NativeUIUtils.showRattaDialog('The PDF is ready. Open it now?','Later','Open',false)}).then(function(o2){if(o2)return SDK.PluginFileAPI.openFile(res.path,cur)})
 }).catch(function(e){sleepOn(false);setProg('');setMsg(e&&e.code==='E_CANCELLED'?'Cancelled. Nothing was saved.':'Failed: '+(e&&e.message?e.message:e))}).then(function(){setWorking(false)})
 })}
