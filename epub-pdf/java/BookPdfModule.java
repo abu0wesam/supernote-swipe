@@ -1132,7 +1132,7 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
     for (AlignmentSpan a : as) {
       if (a.getAlignment() == Layout.Alignment.ALIGN_CENTER) centered = true;
     }
-    if (len == 1 && b.text.charAt(0) == '\uFFFC') centered = true; // a lone picture
+    if (isLonePicture(b.text)) centered = true; // a lone picture
     if (s.align.equals("center") || centered) al = Layout.Alignment.ALIGN_CENTER;
     else if (s.align.equals("right")) al = rtl ? Layout.Alignment.ALIGN_NORMAL : Layout.Alignment.ALIGN_OPPOSITE;
     else if (s.align.equals("left")) al = rtl ? Layout.Alignment.ALIGN_OPPOSITE : Layout.Alignment.ALIGN_NORMAL;
@@ -1150,6 +1150,16 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
     b.lay = bld.build();
   }
 
+  private static boolean isLonePicture(CharSequence t) {
+    int n = 0;
+    for (int i = 0; i < t.length(); i++) {
+      char c = t.charAt(i);
+      if (c == '\uFFFC') n++;
+      else if (!Character.isWhitespace(c) && c != '\u200F' && c != '\u200E' && c != '\u00A0') return false;
+    }
+    return n == 1;
+  }
+
   private void fitImages(Spanned t, int w) {
     ImageSpan[] is = t.getSpans(0, t.length(), ImageSpan.class);
     for (ImageSpan sp : is) {
@@ -1162,8 +1172,8 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
         if (bm != null) { iw = bm.getWidth(); ih = bm.getHeight(); }
       }
       if (iw <= 1 || ih <= 1) continue;
-      boolean lone = t.length() == 1;
-      float cap = (lone && iw >= 300) ? 100f : 0.5f;
+      boolean lone = isLonePicture(t);
+      float cap = (lone && iw >= 120) ? 100f : 0.5f;
       float sc = Math.min(cap, Math.min(w / (float) iw, contentH * 0.92f / ih));
       d.setBounds(0, 0, Math.max(1, Math.round(iw * sc)), Math.max(1, Math.round(ih * sc)));
     }
@@ -1333,6 +1343,7 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
             doc.finishPage(page);
             if ((i & 7) == 0 || i == total - 1) emit("export", i + 1, total);
           }
+          emit("save", total, total);
           FileOutputStream fo = new FileOutputStream(part);
           try { doc.writeTo(fo); } finally { fo.close(); }
           doc.close();
@@ -1340,6 +1351,7 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
           if (!part.renameTo(target)) throw new IOException("Could not save the PDF");
           part = null;
           int outlineCount = 0;
+          String outlineNote = "";
           try {
             List<PdfOutline.Item> its = new ArrayList<>();
             for (TocItem ti : toc) {
@@ -1347,12 +1359,26 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
                 its.add(new PdfOutline.Item(ti.title, ti.level, blockPage[ti.block]));
               }
             }
-            if (!its.isEmpty() && PdfOutline.add(target, its)) outlineCount = its.size();
-          } catch (Throwable ignored) { }
+            if (its.isEmpty()) {
+              for (int bi = 0; bi < blocks.size() && its.size() < 400; bi++) {
+                Block hb = blocks.get(bi);
+                if (hb.heading && bi < blockPage.length) {
+                  String ht = hb.text.toString().replace('\uFFFC', ' ').replaceAll("\\s+", " ").trim();
+                  if (ht.length() > 0 && ht.length() < 120) its.add(new PdfOutline.Item(ht, 1, blockPage[bi]));
+                }
+              }
+            }
+            if (!its.isEmpty()) {
+              if (PdfOutline.add(target, its)) outlineCount = its.size();
+              else outlineNote = "bookmarks not written (unsupported PDF layout)";
+            } else outlineNote = "no table of contents found in the book";
+          } catch (Throwable ex2) { outlineNote = "bookmarks failed: " + ex2; }
           WritableMap m = Arguments.createMap();
           m.putString("path", target.getAbsolutePath());
           m.putInt("pages", total);
           m.putInt("outline", outlineCount);
+          m.putString("outlineNote", outlineNote);
+          m.putInt("tocItems", toc.size());
           m.putDouble("bytes", (double) target.length());
           m.putDouble("ms", (double) (System.currentTimeMillis() - t0));
           promise.resolve(m);

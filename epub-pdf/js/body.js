@@ -25,7 +25,7 @@ function BookScreen(props){
 var path=props.path;
 var A=r.useState(DEF),cfg=A[0],setCfg=A[1];
 var B=r.useState(null),dir=B[0],setDir=B[1];
-var C=r.useState(BASE_FONTS),fonts=C[0],setFonts=C[1];
+var C=r.useState(BASE_FONTS),fonts=C[0],setFonts=C[1];var FO=r.useState(false),fopen=FO[0],setFopen=FO[1];
 var D=r.useState(false),ready=D[0],setReady=D[1];
 var E=r.useState({n:0,i:0}),pgs=E[0],setPgs=E[1];
 var F=r.useState(null),img=F[0],setImg=F[1];
@@ -66,7 +66,7 @@ fontsRef.current=fl;if(live){setFonts(fl);setCfg(c)}return[c,fl]}).catch(functio
 .then(function(cf){if(!live)return;setMsg('Reading the book\u2026');return BK.loadBook(path).then(function(){setReady(true);var fr=tot>0?Math.max(0,Math.min(1,cur/tot)):0;fracRef.current=fr;return relayout(cf[0],cf[1],-1,fr)})})
 .catch(function(e){if(live)setMsg('Failed: '+(e&&e.message?e.message:e))});
 return function(){live=false}},[dir]);
-r.useEffect(function(){var sub=l.DeviceEventEmitter.addListener('BookPdfProgress',function(e){if(e.stage==='export')setProg(e.done+' / '+e.total);else if(e.stage==='read')setMsg('Reading the book\u2026 '+e.done+' / '+e.total);else if(e.stage==='layout')setMsg('Laying out... '+e.done+' / '+e.total)});return function(){sub.remove()}},[]);
+r.useEffect(function(){var sub=l.DeviceEventEmitter.addListener('BookPdfProgress',function(e){if(e.stage==='export')setProg(e.done+' / '+e.total);else if(e.stage==='read')setMsg('Reading the book\u2026 '+e.done+' / '+e.total);else if(e.stage==='save')setProg('saving\u2026');else if(e.stage==='layout')setMsg('Laying out... '+e.done+' / '+e.total)});return function(){sub.remove()}},[]);
 var key=JSON.stringify(mkSettings(cfg,fonts));
 var first=r.useRef(true);
 r.useEffect(function(){if(!ready){return}
@@ -89,7 +89,7 @@ setWorking(true);setProg('starting\u2026');setMsg(null);
 var cur=pgRef.current;
 var sleepOn=function(v){try{var f=SDK.PluginCommAPI.setSystemDormancyState;if(typeof f==='function')return Promise.resolve(f.call(SDK.PluginCommAPI,v)).catch(function(){})}catch(e){}return Promise.resolve()};
 return sleepOn(true).then(function(){return BK.exportPdf(target)}).then(function(res){
-setProg('');setMsg('Done: '+res.pages+' pages, '+(res.bytes/1048576).toFixed(1)+' MB in '+Math.round(res.ms/1000)+' s'+(res.outline?', '+res.outline+' bookmarks':'')+'.\n'+res.path);
+setProg('');setMsg('Done: '+res.pages+' pages, '+(res.bytes/1048576).toFixed(1)+' MB in '+Math.round(res.ms/1000)+' s'+(res.outline?', '+res.outline+' bookmarks':(res.outlineNote?' ('+res.outlineNote+')':''))+'.\n'+res.path);
 return sleepOn(false).then(function(){return SDK.NativeUIUtils.showRattaDialog('The PDF is ready. Open it now?','Later','Open',false)}).then(function(o2){if(o2)return SDK.PluginFileAPI.openFile(res.path,cur)})
 }).catch(function(e){sleepOn(false);setProg('');setMsg(e&&e.code==='E_CANCELLED'?'Cancelled. Nothing was saved.':'Failed: '+(e&&e.message?e.message:e))}).then(function(){setWorking(false)})
 })}
@@ -100,6 +100,9 @@ var rt=Math.max(120,Math.min(box.h-10,(box.w-10)/asp)),lt=rt*asp;
 var uri=img?'file://'+img:null;
 if(full&&uri){return r.createElement(l.Pressable,{style:S.full,onPress:function(){setFull(false)}},r.createElement(l.Image,{source:{uri:uri},resizeMode:'stretch',style:{width:Math.min(win.width,win.height*asp),height:Math.min(win.width/asp,win.height)}}))}
 var fcur=fonts[Math.min(cfg.fontIdx,fonts.length-1)]||fonts[0];
+if(fopen){return r.createElement(l.View,{style:S.container},
+r.createElement(l.View,{style:S.header},r.createElement(l.Text,{style:S.title},'Choose font'),r.createElement(l.View,{style:{flex:1}}),r.createElement(l.Pressable,{onPress:function(){setFopen(false)},hitSlop:10,style:{padding:8}},Tx('\u2715',28))),
+r.createElement(l.ScrollView,{style:{flex:1}},fonts.map(function(f,i){var on=i===cfg.fontIdx;return r.createElement(l.Pressable,{key:f.path+i,onPress:function(){upd('fontIdx',i);upd('en',Object.assign({},cfg.en,{font:true}));setFopen(false)},style:{paddingVertical:16,paddingHorizontal:20,borderBottomWidth:1,borderColor:'#999999',backgroundColor:on?ZK:ZW}},r.createElement(l.Text,{numberOfLines:1,style:{fontSize:22,fontWeight:'700',color:on?ZW:ZK}},f.label))})))}
 var nav=function(sym,fn){return r.createElement(l.Pressable,{onPress:fn,hitSlop:6,style:{width:64,height:42,borderWidth:2.5,borderColor:ZK,borderRadius:9,alignItems:'center',justifyContent:'center',marginHorizontal:5}},Tx(sym,24))};
 var locked=!ready||busy||working;
 return r.createElement(l.View,{style:S.container},
@@ -116,9 +119,7 @@ lvl('vert','vert','height',function(v){return LV.vert[v-1]+'%'}),
 r.createElement(ZRow2,{key:'weight',kind:'weight',on:cfg.en.weight,onToggle:tog('weight')},r.createElement(ZSlider,{value:cfg.weight,enabled:cfg.en.weight,onPick:function(n){upd('weight',n)}}),r.createElement(l.Text,{style:{width:56,textAlign:'right',fontSize:22,fontWeight:'700',color:ZK}},String(cfg.weight))),
 r.createElement(ZRow2,{key:'font',kind:'font',on:cfg.en.font,onToggle:tog('font')},
 r.createElement(l.View,{pointerEvents:cfg.en.font?'auto':'none',style:{flex:1,flexDirection:'row',alignItems:'center',opacity:cfg.en.font?1:.3}},
-nav('\u2039',function(){upd('fontIdx',(cfg.fontIdx+fonts.length-1)%fonts.length)}),
-r.createElement(l.Text,{numberOfLines:1,style:{flex:1,textAlign:'center',fontSize:20,fontWeight:'700',color:ZK}},fcur.label),
-nav('\u203A',function(){upd('fontIdx',(cfg.fontIdx+1)%fonts.length)}))),
+r.createElement(l.Pressable,{onPress:function(){setFopen(true)},style:{flex:1,height:42,borderWidth:2.5,borderColor:ZK,borderRadius:9,flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingHorizontal:12}},Tx('\u25BE',22),r.createElement(l.Text,{numberOfLines:1,style:{flex:1,textAlign:'right',fontSize:20,fontWeight:'700',color:ZK}},fcur.label)))),
 r.createElement(ZRow2,{key:'align',kind:'align',on:cfg.en.align,onToggle:tog('align')},r.createElement(l.View,{style:{flex:1,alignItems:'flex-end'}},SegGroup([['right','Right'],['justify','Justify'],['left','Left'],['center','Center']],cfg.align,function(v){upd('align',v)},cfg.en.align))),
 r.createElement(ZRow2,{key:'dir',kind:'dir',on:cfg.en.dir,onToggle:tog('dir')},r.createElement(l.View,{style:{flex:1,alignItems:'flex-end'}},SegGroup([['auto','Auto'],['rtl','RTL'],['ltr','LTR']],cfg.dir,function(v){upd('dir',v)},cfg.en.dir)))),
 r.createElement(l.View,{style:S.buttons},
