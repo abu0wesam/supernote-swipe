@@ -1403,6 +1403,178 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
     });
   }
 
+
+  // ---- EPUB export: the original book, untouched except for one style sheet carrying the chosen settings ----
+
+  @ReactMethod
+  public void exportEpub(final String outPath, final String settingsJson, final Promise promise) {
+    cancelled = false;
+    ex.execute(new Runnable() {
+      @Override public void run() {
+        long t0 = System.currentTimeMillis();
+        File part = null;
+        ZipFile zip = null;
+        try {
+          if (bookPath == null) throw new IOException("No book is loaded");
+          Settings st = parseSettings(settingsJson);
+          File target = uniqueTarget(new File(outPath));
+          File dir = target.getParentFile();
+          if (dir != null) dir.mkdirs();
+          part = new File(target.getPath() + ".part");
+          zip = new ZipFile(bookPath);
+          // opf location
+          String opfPath = null;
+          ZipEntry ce = zip.getEntry("META-INF/container.xml");
+          if (ce != null) {
+            Matcher m = Pattern.compile("full-path\\s*=\\s*[\"']([^\"']+)[\"']").matcher(decode(readAll(zip.getInputStream(ce), 1 << 20)));
+            if (m.find()) opfPath = m.group(1);
+          }
+          if (opfPath == null) throw new IOException("The EPUB package file was not found");
+          String opfDir = opfPath.contains("/") ? opfPath.substring(0, opfPath.lastIndexOf('/') + 1) : "";
+          // classes the book itself centres: they keep their centring
+          StringBuilder keep = new StringBuilder();
+          java.util.LinkedHashSet<String> centred = new java.util.LinkedHashSet<>();
+          List<String> names = new ArrayList<>();
+          for (java.util.Enumeration<? extends ZipEntry> en = zip.entries(); en.hasMoreElements();) names.add(en.nextElement().getName());
+          for (String n : names) {
+            if (n.toLowerCase(Locale.ROOT).endsWith(".css")) {
+              String css = decode(readAll(zip.getInputStream(zip.getEntry(n)), 4 << 20));
+              Matcher rm = CSS_RULE.matcher(css);
+              while (rm.find()) {
+                if (rm.group(2).replaceAll("\\s", "").toLowerCase(Locale.ROOT).contains("text-align:center")) {
+                  Matcher cm = Pattern.compile("\\.([\\w-]+)").matcher(rm.group(1));
+                  while (cm.find()) centred.add(cm.group(1));
+                }
+              }
+            }
+          }
+          for (String c : centred) keep.append(":not(.").append(c).append(")");
+          // font
+          String fontFile = null;
+          String family;
+          if (st.font == null || st.font.equals("default")) family = null;
+          else if (st.font.equals("serif")) family = "serif";
+          else if (st.font.equals("sans")) family = "sans-serif";
+          else if (st.font.equals("mono")) family = "monospace";
+          else { family = "'PDFToolFont'"; fontFile = st.font; }
+          StringBuilder css = new StringBuilder("/* written by PDF Tool */\n");
+          String fext = null;
+          if (fontFile != null) {
+            File ff = new File(fontFile);
+            if (!ff.isFile()) { family = null; fontFile = null; }
+            else {
+              String fl = ff.getName().toLowerCase(Locale.ROOT);
+              fext = fl.endsWith(".otf") ? "otf" : "ttf";
+              css.append("@font-face{font-family:'PDFToolFont';src:url('pdftool_font.").append(fext).append("');}\n");
+            }
+          }
+          float pct = st.size / 12f * 100f;
+          css.append("html{font-size:").append(Math.round(pct)).append("% !important;}\n");
+          css.append("body{").append("margin:").append(String.format(Locale.US, "%.1f%% %.1f%%", st.vertPct * 0.7f, st.sidePct))
+              .append(" !important;");
+          if (family != null) css.append("font-family:").append(family).append(" !important;");
+          if (st.dir.equals("rtl")) css.append("direction:rtl !important;");
+          else if (st.dir.equals("ltr")) css.append("direction:ltr !important;");
+          css.append("}\n");
+          if (family != null) css.append("body *{font-family:").append(family).append(" !important;}\n");
+          css.append("p,li,blockquote,div,span{line-height:").append(String.format(Locale.US, "%.2f", st.spacing)).append(" !important;}\n");
+          String al = st.align;
+          if (al.equals("justify") || al.equals("left") || al.equals("right") || al.equals("center")) {
+            String v = al.equals("justify") ? "justify" : al;
+            css.append("p").append(keep).append(",li,blockquote,div").append(keep).append("{text-align:").append(v).append(" !important;}\n");
+          }
+          byte[] cssBytes = css.toString().getBytes("UTF-8");
+
+          java.util.zip.ZipOutputStream zo = new java.util.zip.ZipOutputStream(new java.io.BufferedOutputStream(new FileOutputStream(part)));
+          try {
+            // mimetype must come first and be stored
+            ZipEntry mt = zip.getEntry("mimetype");
+            byte[] mtb = mt != null ? readAll(zip.getInputStream(mt), 1024) : "application/epub+zip".getBytes("UTF-8");
+            ZipEntry me = new ZipEntry("mimetype");
+            me.setMethod(ZipEntry.STORED);
+            me.setSize(mtb.length);
+            me.setCompressedSize(mtb.length);
+            java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+            crc.update(mtb);
+            me.setCrc(crc.getValue());
+            zo.putNextEntry(me);
+            zo.write(mtb);
+            zo.closeEntry();
+            int done = 0;
+            for (String n : names) {
+              check();
+              if (n.equals("mimetype") || n.endsWith("/")) continue;
+              ZipEntry src = zip.getEntry(n);
+              byte[] data = readAll(zip.getInputStream(src), 200 << 20);
+              String ln = n.toLowerCase(Locale.ROOT);
+              if (n.equals(opfPath)) {
+                String o = decode(data);
+                String item = "<item id=\"pdftool-css\" href=\"pdftool_override.css\" media-type=\"text/css\"/>";
+                if (fext != null) item += "<item id=\"pdftool-font\" href=\"pdftool_font." + fext + "\" media-type=\"" + (fext.equals("otf") ? "font/otf" : "font/ttf") + "\"/>";
+                int mi = o.indexOf("</manifest>");
+                if (mi >= 0) o = o.substring(0, mi) + item + o.substring(mi);
+                data = o.getBytes("UTF-8");
+              } else if (ln.endsWith(".xhtml") || ln.endsWith(".html") || ln.endsWith(".htm")) {
+                String h = decode(data);
+                int hi = h.toLowerCase(Locale.ROOT).indexOf("</head>");
+                if (hi >= 0) {
+                  String rel = relPath(n, opfDir + "pdftool_override.css");
+                  h = h.substring(0, hi) + "<link rel=\"stylesheet\" type=\"text/css\" href=\"" + rel + "\"/>" + h.substring(hi);
+                  data = h.getBytes("UTF-8");
+                }
+              }
+              ZipEntry oe = new ZipEntry(n);
+              oe.setMethod(ZipEntry.DEFLATED);
+              zo.putNextEntry(oe);
+              zo.write(data);
+              zo.closeEntry();
+              if ((++done & 7) == 0) emit("export", done, names.size());
+            }
+            ZipEntry ce2 = new ZipEntry(opfDir + "pdftool_override.css");
+            zo.putNextEntry(ce2);
+            zo.write(cssBytes);
+            zo.closeEntry();
+            if (fext != null) {
+              ZipEntry fe = new ZipEntry(opfDir + "pdftool_font." + fext);
+              zo.putNextEntry(fe);
+              FileInputStream fi = new FileInputStream(fontFile);
+              try {
+                byte[] buf = new byte[65536];
+                int r;
+                while ((r = fi.read(buf)) > 0) zo.write(buf, 0, r);
+              } finally { fi.close(); }
+              zo.closeEntry();
+            }
+          } finally { zo.close(); }
+          if (!part.renameTo(target)) throw new IOException("Could not save the EPUB");
+          part = null;
+          WritableMap m = Arguments.createMap();
+          m.putString("path", target.getAbsolutePath());
+          m.putDouble("bytes", (double) target.length());
+          m.putDouble("ms", (double) (System.currentTimeMillis() - t0));
+          promise.resolve(m);
+        } catch (Throwable t) {
+          fail(promise, t);
+        } finally {
+          if (zip != null) { try { zip.close(); } catch (Throwable ignored) { } }
+          if (part != null) { try { part.delete(); } catch (Throwable ignored) { } }
+        }
+      }
+    });
+  }
+
+  /** Relative link from one zip entry to another. */
+  private static String relPath(String from, String to) {
+    String[] a = from.split("/");
+    String[] b = to.split("/");
+    int i = 0;
+    while (i < a.length - 1 && i < b.length - 1 && a[i].equals(b[i])) i++;
+    StringBuilder r = new StringBuilder();
+    for (int k = i; k < a.length - 1; k++) r.append("../");
+    for (int k = i; k < b.length; k++) { if (k > i) r.append('/'); r.append(b[k]); }
+    return r.toString();
+  }
+
   /** Never overwrites an existing file: adds " (2)", " (3)" ... */
   private static File uniqueTarget(File f) {
     if (!f.exists()) return f;
