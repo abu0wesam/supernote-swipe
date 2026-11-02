@@ -97,6 +97,7 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
     StaticLayout lay;
     List<String> anchors;
     boolean rtl;
+    float scale = 1f;
   }
 
   private static class Seg {
@@ -119,6 +120,7 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
     String align = "justify";
     String dir = "auto";
     boolean chapterBreak = true;
+    boolean original = false;
   }
 
   public BookPdfModule(ReactApplicationContext context) {
@@ -948,7 +950,10 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
           if (!bl.heading) {
             // body text sized by the book's CSS follows the size chosen in the tool instead
             for (RelativeSizeSpan rs : para.getSpans(0, para.length(), RelativeSizeSpan.class)) {
-              if ((para.getSpanEnd(rs) - para.getSpanStart(rs)) * 10 >= para.length() * 9) para.removeSpan(rs);
+              if ((para.getSpanEnd(rs) - para.getSpanStart(rs)) * 10 >= para.length() * 9) {
+                bl.scale *= rs.getSizeChange();
+                para.removeSpan(rs);
+              }
             }
           }
           bl.anchors = pending;
@@ -999,9 +1004,120 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
   // Layout (StaticLayout) and pagination
   // =====================================================================
 
+
+  /** Settings taken from the book itself (its own style sheets), ignoring everything chosen in the tool. */
+  private Settings deriveOriginal() throws Exception {
+    Settings s = new Settings();
+    s.original = true;
+    s.weight = 1;
+    s.dir = "auto";
+    s.sidePct = 6f;
+    s.vertPct = 5f;
+    ZipFile zip = new ZipFile(bookPath);
+    try {
+      int just = 0, left = 0, right = 0;
+      Map<String, Integer> lh = new HashMap<>();
+      float bodySize = -1f;
+      String fontFace = null;
+      String family = null;
+      String opfText = "";
+      List<String> names = new ArrayList<>();
+      for (java.util.Enumeration<? extends ZipEntry> en = zip.entries(); en.hasMoreElements();) names.add(en.nextElement().getName());
+      for (String n : names) {
+        String ln = n.toLowerCase(Locale.ROOT);
+        if (ln.endsWith(".opf")) opfText = decode(readAll(zip.getInputStream(zip.getEntry(n)), 4 << 20));
+        if (!ln.endsWith(".css")) continue;
+        String css = decode(readAll(zip.getInputStream(zip.getEntry(n)), 4 << 20));
+        Matcher ff = Pattern.compile("(?is)@font-face\\s*\\{([^}]*)\\}").matcher(css);
+        while (ff.find() && fontFace == null) {
+          Matcher um = Pattern.compile("(?is)url\\(\\s*[\"']?([^)\"']+\\.(?:ttf|otf))[\"']?\\s*\\)").matcher(ff.group(1));
+          if (um.find()) {
+            String ent = resolve(n, um.group(1));
+            ZipEntry fe = entry(zip, buildLower(names), ent);
+            if (fe != null) {
+              File out = new File(getReactApplicationContext().getCacheDir(), "bookfont_" + Integer.toHexString(ent.hashCode()) + (ent.toLowerCase(Locale.ROOT).endsWith("otf") ? ".otf" : ".ttf"));
+              if (!out.isFile()) {
+                byte[] fd = readAll(zip.getInputStream(fe), 30 << 20);
+                FileOutputStream fo = new FileOutputStream(out);
+                try { fo.write(fd); } finally { fo.close(); }
+              }
+              fontFace = out.getAbsolutePath();
+            }
+          }
+        }
+        Matcher rm = CSS_RULE.matcher(css);
+        while (rm.find()) {
+          String sel = rm.group(1).trim().toLowerCase(Locale.ROOT);
+          String body = rm.group(2);
+          for (String d : body.split(";")) {
+            int c = d.indexOf(':');
+            if (c < 0) continue;
+            String k = d.substring(0, c).trim().toLowerCase(Locale.ROOT);
+            String v = d.substring(c + 1).replace("!important", "").trim().toLowerCase(Locale.ROOT);
+            if (k.equals("text-align")) {
+              if (v.startsWith("justify")) just++;
+              else if (v.startsWith("right")) right++;
+              else if (v.startsWith("left")) left++;
+            } else if (k.equals("line-height")) {
+              Integer old = lh.get(v);
+              lh.put(v, old == null ? 1 : old + 1);
+            } else if (sel.equals("body") || sel.equals("html")) {
+              if (k.equals("font-size")) {
+                float r = sizeRatio(v);
+                if (r > 0) bodySize = r;
+              } else if (k.equals("font-family") && family == null) {
+                family = v;
+              }
+            } else if (k.equals("font-family") && family == null && !sel.startsWith("h") && !sel.contains("title")) {
+              family = v;
+            }
+          }
+        }
+      }
+      // size: the book's own base size (16px / 1em = 12 pt), else the reader default of 12 pt
+      s.size = 12f;
+      if (bodySize > 0) s.size = Math.max(8f, Math.min(24f, 12f * bodySize));
+      // alignment: what most of the book's rules say
+      if (just >= left && just >= right && just > 0) s.align = "justify";
+      else if (right > left && right > just) s.align = "right";
+      else if (left > 0) s.align = "left";
+      else s.align = "justify";
+      // line height: the most used value
+      float best = 1.2f;
+      int bc = 0;
+      for (Map.Entry<String, Integer> e : lh.entrySet()) {
+        if (e.getValue() <= bc) continue;
+        Matcher nm = Pattern.compile("^([0-9.]+)(em|%)?$").matcher(e.getKey());
+        if (!nm.matches()) continue;
+        float v = Float.parseFloat(nm.group(1));
+        if ("%".equals(nm.group(2))) v /= 100f;
+        if (v >= 0.9f && v <= 3f) { best = v; bc = e.getValue(); }
+      }
+      s.spacing = best;
+      // font: an embedded font of the book, else the family class it names
+      if (fontFace != null) s.font = fontFace;
+      else if (family != null) {
+        if (family.contains("mono") || family.contains("courier")) s.font = "mono";
+        else if (family.contains("sans") || family.contains("arial") || family.contains("helvet")) s.font = "sans";
+        else if (family.contains("serif") || family.contains("times") || family.contains("georgia")) s.font = "serif";
+      }
+      if (opfText.contains("page-progression-direction=\"rtl\"")) s.dir = "auto"; // Arabic paragraphs are detected one by one
+    } finally {
+      try { zip.close(); } catch (Throwable ignored) { }
+    }
+    return s;
+  }
+
+  private static Map<String, String> buildLower(List<String> names) {
+    Map<String, String> m = new HashMap<>();
+    for (String n : names) m.put(n.toLowerCase(Locale.ROOT), n);
+    return m;
+  }
+
   private Settings parseSettings(String json) throws Exception {
     Settings s = new Settings();
     JSONObject o = new JSONObject(json);
+    if (o.optBoolean("original", false)) return deriveOriginal();
     s.size = (float) Math.max(6, Math.min(40, o.optDouble("size", s.size)));
     s.spacing = (float) Math.max(0.8, Math.min(3, o.optDouble("spacing", s.spacing)));
     s.sidePct = (float) Math.max(0, Math.min(25, o.optDouble("side", s.sidePct)));
@@ -1148,7 +1264,12 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
     else if (s.align.equals("right")) al = rtl ? Layout.Alignment.ALIGN_NORMAL : Layout.Alignment.ALIGN_OPPOSITE;
     else if (s.align.equals("left")) al = rtl ? Layout.Alignment.ALIGN_OPPOSITE : Layout.Alignment.ALIGN_NORMAL;
     else if (s.align.equals("justify") && !b.heading) just = true;
-    StaticLayout.Builder bld = StaticLayout.Builder.obtain(b.text, 0, len, paint, w)
+    TextPaint usePaint = paint;
+    if (s.original && Math.abs(b.scale - 1f) > 0.01f) {
+      usePaint = new TextPaint(paint);
+      usePaint.setTextSize(paint.getTextSize() * b.scale);
+    }
+    StaticLayout.Builder bld = StaticLayout.Builder.obtain(b.text, 0, len, usePaint, w)
         .setAlignment(al)
         .setLineSpacing(0f, s.spacing)
         .setIncludePad(false)
@@ -1403,177 +1524,6 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
     });
   }
 
-
-  // ---- EPUB export: the original book, untouched except for one style sheet carrying the chosen settings ----
-
-  @ReactMethod
-  public void exportEpub(final String outPath, final String settingsJson, final Promise promise) {
-    cancelled = false;
-    ex.execute(new Runnable() {
-      @Override public void run() {
-        long t0 = System.currentTimeMillis();
-        File part = null;
-        ZipFile zip = null;
-        try {
-          if (bookPath == null) throw new IOException("No book is loaded");
-          Settings st = parseSettings(settingsJson);
-          File target = uniqueTarget(new File(outPath));
-          File dir = target.getParentFile();
-          if (dir != null) dir.mkdirs();
-          part = new File(target.getPath() + ".part");
-          zip = new ZipFile(bookPath);
-          // opf location
-          String opfPath = null;
-          ZipEntry ce = zip.getEntry("META-INF/container.xml");
-          if (ce != null) {
-            Matcher m = Pattern.compile("full-path\\s*=\\s*[\"']([^\"']+)[\"']").matcher(decode(readAll(zip.getInputStream(ce), 1 << 20)));
-            if (m.find()) opfPath = m.group(1);
-          }
-          if (opfPath == null) throw new IOException("The EPUB package file was not found");
-          String opfDir = opfPath.contains("/") ? opfPath.substring(0, opfPath.lastIndexOf('/') + 1) : "";
-          // classes the book itself centres: they keep their centring
-          StringBuilder keep = new StringBuilder();
-          java.util.LinkedHashSet<String> centred = new java.util.LinkedHashSet<>();
-          List<String> names = new ArrayList<>();
-          for (java.util.Enumeration<? extends ZipEntry> en = zip.entries(); en.hasMoreElements();) names.add(en.nextElement().getName());
-          for (String n : names) {
-            if (n.toLowerCase(Locale.ROOT).endsWith(".css")) {
-              String css = decode(readAll(zip.getInputStream(zip.getEntry(n)), 4 << 20));
-              Matcher rm = CSS_RULE.matcher(css);
-              while (rm.find()) {
-                if (rm.group(2).replaceAll("\\s", "").toLowerCase(Locale.ROOT).contains("text-align:center")) {
-                  Matcher cm = Pattern.compile("\\.([\\w-]+)").matcher(rm.group(1));
-                  while (cm.find()) centred.add(cm.group(1));
-                }
-              }
-            }
-          }
-          for (String c : centred) keep.append(":not(.").append(c).append(")");
-          // font
-          String fontFile = null;
-          String family;
-          if (st.font == null || st.font.equals("default")) family = null;
-          else if (st.font.equals("serif")) family = "serif";
-          else if (st.font.equals("sans")) family = "sans-serif";
-          else if (st.font.equals("mono")) family = "monospace";
-          else { family = "'PDFToolFont'"; fontFile = st.font; }
-          StringBuilder css = new StringBuilder("/* written by PDF Tool */\n");
-          String fext = null;
-          if (fontFile != null) {
-            File ff = new File(fontFile);
-            if (!ff.isFile()) { family = null; fontFile = null; }
-            else {
-              String fl = ff.getName().toLowerCase(Locale.ROOT);
-              fext = fl.endsWith(".otf") ? "otf" : "ttf";
-              css.append("@font-face{font-family:'PDFToolFont';src:url('pdftool_font.").append(fext).append("');}\n");
-            }
-          }
-          float pct = st.size / 12f * 100f;
-          css.append("html{font-size:").append(Math.round(pct)).append("% !important;}\n");
-          css.append("body{").append("margin:").append(String.format(Locale.US, "%.1f%% %.1f%%", st.vertPct * 0.7f, st.sidePct))
-              .append(" !important;");
-          if (family != null) css.append("font-family:").append(family).append(" !important;");
-          if (st.dir.equals("rtl")) css.append("direction:rtl !important;");
-          else if (st.dir.equals("ltr")) css.append("direction:ltr !important;");
-          css.append("}\n");
-          if (family != null) css.append("body *{font-family:").append(family).append(" !important;}\n");
-          css.append("p,li,blockquote,div,span{line-height:").append(String.format(Locale.US, "%.2f", st.spacing)).append(" !important;}\n");
-          String al = st.align;
-          if (al.equals("justify") || al.equals("left") || al.equals("right") || al.equals("center")) {
-            String v = al.equals("justify") ? "justify" : al;
-            css.append("p").append(keep).append(",li,blockquote,div").append(keep).append("{text-align:").append(v).append(" !important;}\n");
-          }
-          byte[] cssBytes = css.toString().getBytes("UTF-8");
-
-          java.util.zip.ZipOutputStream zo = new java.util.zip.ZipOutputStream(new java.io.BufferedOutputStream(new FileOutputStream(part)));
-          try {
-            // mimetype must come first and be stored
-            ZipEntry mt = zip.getEntry("mimetype");
-            byte[] mtb = mt != null ? readAll(zip.getInputStream(mt), 1024) : "application/epub+zip".getBytes("UTF-8");
-            ZipEntry me = new ZipEntry("mimetype");
-            me.setMethod(ZipEntry.STORED);
-            me.setSize(mtb.length);
-            me.setCompressedSize(mtb.length);
-            java.util.zip.CRC32 crc = new java.util.zip.CRC32();
-            crc.update(mtb);
-            me.setCrc(crc.getValue());
-            zo.putNextEntry(me);
-            zo.write(mtb);
-            zo.closeEntry();
-            int done = 0;
-            for (String n : names) {
-              check();
-              if (n.equals("mimetype") || n.endsWith("/")) continue;
-              ZipEntry src = zip.getEntry(n);
-              byte[] data = readAll(zip.getInputStream(src), 200 << 20);
-              String ln = n.toLowerCase(Locale.ROOT);
-              if (n.equals(opfPath)) {
-                String o = decode(data);
-                String item = "<item id=\"pdftool-css\" href=\"pdftool_override.css\" media-type=\"text/css\"/>";
-                if (fext != null) item += "<item id=\"pdftool-font\" href=\"pdftool_font." + fext + "\" media-type=\"" + (fext.equals("otf") ? "font/otf" : "font/ttf") + "\"/>";
-                int mi = o.indexOf("</manifest>");
-                if (mi >= 0) o = o.substring(0, mi) + item + o.substring(mi);
-                data = o.getBytes("UTF-8");
-              } else if (ln.endsWith(".xhtml") || ln.endsWith(".html") || ln.endsWith(".htm")) {
-                String h = decode(data);
-                int hi = h.toLowerCase(Locale.ROOT).indexOf("</head>");
-                if (hi >= 0) {
-                  String rel = relPath(n, opfDir + "pdftool_override.css");
-                  h = h.substring(0, hi) + "<link rel=\"stylesheet\" type=\"text/css\" href=\"" + rel + "\"/>" + h.substring(hi);
-                  data = h.getBytes("UTF-8");
-                }
-              }
-              ZipEntry oe = new ZipEntry(n);
-              oe.setMethod(ZipEntry.DEFLATED);
-              zo.putNextEntry(oe);
-              zo.write(data);
-              zo.closeEntry();
-              if ((++done & 7) == 0) emit("export", done, names.size());
-            }
-            ZipEntry ce2 = new ZipEntry(opfDir + "pdftool_override.css");
-            zo.putNextEntry(ce2);
-            zo.write(cssBytes);
-            zo.closeEntry();
-            if (fext != null) {
-              ZipEntry fe = new ZipEntry(opfDir + "pdftool_font." + fext);
-              zo.putNextEntry(fe);
-              FileInputStream fi = new FileInputStream(fontFile);
-              try {
-                byte[] buf = new byte[65536];
-                int r;
-                while ((r = fi.read(buf)) > 0) zo.write(buf, 0, r);
-              } finally { fi.close(); }
-              zo.closeEntry();
-            }
-          } finally { zo.close(); }
-          if (!part.renameTo(target)) throw new IOException("Could not save the EPUB");
-          part = null;
-          WritableMap m = Arguments.createMap();
-          m.putString("path", target.getAbsolutePath());
-          m.putDouble("bytes", (double) target.length());
-          m.putDouble("ms", (double) (System.currentTimeMillis() - t0));
-          promise.resolve(m);
-        } catch (Throwable t) {
-          fail(promise, t);
-        } finally {
-          if (zip != null) { try { zip.close(); } catch (Throwable ignored) { } }
-          if (part != null) { try { part.delete(); } catch (Throwable ignored) { } }
-        }
-      }
-    });
-  }
-
-  /** Relative link from one zip entry to another. */
-  private static String relPath(String from, String to) {
-    String[] a = from.split("/");
-    String[] b = to.split("/");
-    int i = 0;
-    while (i < a.length - 1 && i < b.length - 1 && a[i].equals(b[i])) i++;
-    StringBuilder r = new StringBuilder();
-    for (int k = i; k < a.length - 1; k++) r.append("../");
-    for (int k = i; k < b.length; k++) { if (k > i) r.append('/'); r.append(b[k]); }
-    return r.toString();
-  }
 
   /** Never overwrites an existing file: adds " (2)", " (3)" ... */
   private static File uniqueTarget(File f) {

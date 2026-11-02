@@ -82,16 +82,16 @@ function lvl(k,lk,kind,disp){var on=cfg.en[k];var v=cfg[k];var shown=disp(v);
 return r.createElement(ZRow2,{key:k,kind:kind,on:on,onToggle:tog(k)},r.createElement(ZSlider,{value:v,enabled:on,onPick:function(n){upd(k,n)}}),r.createElement(l.Text,{style:{width:56,textAlign:'right',fontSize:22,fontWeight:'700',color:ZK}},String(shown)))}
 function exportPdf(){
 if(!ready||busy||working)return;
-var isE=fmt==='epub';var target=path.replace(/\.epub$/i,'')+(isE?' (PDF Tool).epub':'.pdf');
-SDK.NativeUIUtils.showRattaDialog((isE?'Create a new EPUB with these settings?\nBookmarks and other book properties are kept. The original is not changed.':'Create a PDF from this book with these settings?\nThe EPUB is not changed. The PDF is saved next to it.'),'Cancel','Create',false).then(function(ok){
+var isO=fmt==='orig';var target=path.replace(/\.epub$/i,'')+(isO?' (original style).pdf':'.pdf');
+SDK.NativeUIUtils.showRattaDialog((isO?'Create a PDF in the book\'s own style (font size, alignment, spacing read from the EPUB)?\nThe settings above are not used. The EPUB is not changed.':'Create a PDF from this book with these settings?\nThe EPUB is not changed. The PDF is saved next to it.'),'Cancel','Create',false).then(function(ok){
 if(!ok)return;
 setWorking(true);setProg('starting\u2026');setMsg(null);
 var cur=pgRef.current;
 var sleepOn=function(v){try{var f=SDK.PluginCommAPI.setSystemDormancyState;if(typeof f==='function')return Promise.resolve(f.call(SDK.PluginCommAPI,v)).catch(function(){})}catch(e){}return Promise.resolve()};
-return sleepOn(true).then(function(){return (isE?BK.exportEpub(target,JSON.stringify(mkSettings(cfg,fonts))):BK.exportPdf(target))}).then(function(res){
-setProg('');setMsg(isE?('Done: '+(res.bytes/1048576).toFixed(1)+' MB in '+Math.round(res.ms/1000)+' s.\n'+res.path):'Done: '+res.pages+' pages, '+(res.bytes/1048576).toFixed(1)+' MB in '+Math.round(res.ms/1000)+' s'+(res.outline?', '+res.outline+' bookmarks':(res.outlineNote?' ('+res.outlineNote+')':''))+'.\n'+res.path);
-return sleepOn(false).then(function(){return SDK.NativeUIUtils.showRattaDialog((isE?'The EPUB is ready. Open it now?':'The PDF is ready. Open it now?'),'Later','Open',false)}).then(function(o2){if(o2)return SDK.PluginFileAPI.openFile(res.path,cur)})
-}).catch(function(e){sleepOn(false);setProg('');setMsg(e&&e.code==='E_CANCELLED'?'Cancelled. Nothing was saved.':'Failed: '+(e&&e.message?e.message:e))}).then(function(){setWorking(false)})
+return sleepOn(true).then(function(){return (isO?BK.layout(JSON.stringify({original:true}),offRef.current,fracRef.current):Promise.resolve()).then(function(){return BK.exportPdf(target)})}).then(function(res){
+setProg('');setMsg('Done: '+res.pages+' pages, '+(res.bytes/1048576).toFixed(1)+' MB in '+Math.round(res.ms/1000)+' s'+(res.outline?', '+res.outline+' bookmarks':(res.outlineNote?' ('+res.outlineNote+')':''))+'.\n'+res.path);
+return sleepOn(false).then(function(){return SDK.NativeUIUtils.showRattaDialog('The PDF is ready. Open it now?','Later','Open',false)}).then(function(o2){if(o2)return SDK.PluginFileAPI.openFile(res.path,cur)})
+}).catch(function(e){sleepOn(false);setProg('');setMsg(e&&e.code==='E_CANCELLED'?'Cancelled. Nothing was saved.':'Failed: '+(e&&e.message?e.message:e))}).then(function(){setWorking(false);if(isO)relayout(cfg,fonts,offRef.current,fracRef.current)})
 })}
 function cancelExport(){setMsg('Cancelling\u2026');BK.cancel()}
 var win=l.Dimensions.get('window');
@@ -122,9 +122,9 @@ r.createElement(l.View,{pointerEvents:cfg.en.font?'auto':'none',style:{flex:1,fl
 r.createElement(l.Pressable,{onPress:function(){setFopen(true)},style:{flex:1,height:42,borderWidth:2.5,borderColor:ZK,borderRadius:9,flexDirection:'row',alignItems:'center',justifyContent:'space-between',paddingHorizontal:12}},Tx('\u25BE',22),r.createElement(l.Text,{numberOfLines:1,style:{flex:1,textAlign:'right',fontSize:20,fontWeight:'700',color:ZK}},fcur.label)))),
 r.createElement(ZRow2,{key:'align',kind:'align',on:cfg.en.align,onToggle:tog('align')},r.createElement(l.View,{style:{flex:1,alignItems:'flex-end'}},SegGroup([['right','Right'],['justify','Justify'],['left','Left'],['center','Center']],cfg.align,function(v){upd('align',v)},cfg.en.align))),
 r.createElement(ZRow2,{key:'dir',kind:'dir',on:cfg.en.dir,onToggle:tog('dir')},r.createElement(l.View,{style:{flex:1,alignItems:'flex-end'}},SegGroup([['auto','Auto'],['rtl','RTL'],['ltr','LTR']],cfg.dir,function(v){upd('dir',v)},cfg.en.dir)))),
-r.createElement(l.View,{style:{alignSelf:'stretch',flexDirection:'row',justifyContent:'center',paddingVertical:6,opacity:working?.4:1},pointerEvents:working?'none':'auto'},SegGroup([['pdf','PDF'],['epub','EPUB']],fmt,function(v){setFmt(v)},true)),
+r.createElement(l.View,{style:{alignSelf:'stretch',flexDirection:'row',justifyContent:'center',paddingVertical:6,opacity:working?.4:1},pointerEvents:working?'none':'auto'},SegGroup([['pdf','PDF with my settings'],['orig','PDF in the book\'s style']],fmt,function(v){setFmt(v)},true)),
 r.createElement(l.View,{style:S.buttons},
-Btn(working?('Working '+prog):(fmt==='epub'?'Create EPUB':'Create PDF'),exportPdf,!ready||busy||working,true),
+Btn(working?('Working '+prog):(fmt==='orig'?'Create PDF (book style)':'Create PDF'),exportPdf,!ready||busy||working,true),
 working?Btn('Cancel',cancelExport,false,false):null),
 msg&&uri?r.createElement(l.Text,{style:S.message},msg):null,
 r.createElement(l.Text,{style:S.hint},'The page above is drawn by the same code that writes the PDF. A switch off = the standard value. Tap the page to see it full screen.'))}
