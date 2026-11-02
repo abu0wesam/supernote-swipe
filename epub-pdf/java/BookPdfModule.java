@@ -394,13 +394,18 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
 
   private static boolean isHeading(Spanned t) {
     int len = t.length();
-    RelativeSizeSpan[] rs = t.getSpans(0, len, RelativeSizeSpan.class);
-    for (RelativeSizeSpan r : rs) {
-      if (r.getSizeChange() > 1.05f) return true;
-    }
+    if (len >= 160) return false;
     AlignmentSpan[] as = t.getSpans(0, len, AlignmentSpan.class);
     for (AlignmentSpan a : as) {
       if (a.getAlignment() == Layout.Alignment.ALIGN_CENTER && len < 120) return true;
+    }
+    boolean big = false;
+    for (RelativeSizeSpan r : t.getSpans(0, len, RelativeSizeSpan.class)) {
+      if (r.getSizeChange() > 1.05f) big = true;
+    }
+    if (!big) return false;
+    for (android.text.style.StyleSpan st : t.getSpans(0, len, android.text.style.StyleSpan.class)) {
+      if ((st.getStyle() & Typeface.BOLD) != 0) return true;
     }
     return false;
   }
@@ -940,6 +945,12 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
           Block bl = new Block();
           bl.text = para;
           bl.heading = isHeading(para);
+          if (!bl.heading) {
+            // body text sized by the book's CSS follows the size chosen in the tool instead
+            for (RelativeSizeSpan rs : para.getSpans(0, para.length(), RelativeSizeSpan.class)) {
+              if ((para.getSpanEnd(rs) - para.getSpanStart(rs)) * 10 >= para.length() * 9) para.removeSpan(rs);
+            }
+          }
           bl.anchors = pending;
           pending = null;
           ch.blocks.add(bl);

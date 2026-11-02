@@ -48,54 +48,32 @@ public final class PdfOutline {
     } finally { in.close(); }
     String s = new String(data, L1);
 
-    int sx = s.lastIndexOf("startxref");
-    if (sx < 0) return false;
-    Matcher sm = Pattern.compile("startxref\\s+(\\d+)").matcher(s);
-    if (!sm.find(sx)) return false;
-    long prev = Long.parseLong(sm.group(1));
-    if (prev < 0 || prev >= s.length() || !s.startsWith("xref", (int) prev)) return false;
-
+    int tr = s.lastIndexOf("trailer");
+    if (tr < 0) throw new IOException("no classic trailer");
+    String trailer = s.substring(tr);
+    // object positions are found by scanning, so the old cross-reference table is not trusted
     Map<Integer, Long> off = new HashMap<>();
-    int pos = (int) prev + 4;
-    Pattern head = Pattern.compile("\\G\\s*(\\d+)\\s+(\\d+)");
-    Pattern entry = Pattern.compile("\\G\\s*(\\d{10})\\s+(\\d{5})\\s+([nf])");
-    while (true) {
-      int t = skipWs(s, pos);
-      if (s.startsWith("trailer", t)) { pos = t + 7; break; }
-      Matcher hm = head.matcher(s);
-      hm.region(pos, s.length());
-      if (!hm.lookingAt()) return false;
-      int start = Integer.parseInt(hm.group(1));
-      int count = Integer.parseInt(hm.group(2));
-      pos = hm.end();
-      for (int i = 0; i < count; i++) {
-        Matcher em = entry.matcher(s);
-        em.region(pos, s.length());
-        if (!em.lookingAt()) return false;
-        if (em.group(3).equals("n")) off.put(start + i, Long.parseLong(em.group(1)));
-        pos = em.end();
-      }
-    }
-    int trEnd = s.indexOf("startxref", pos);
-    String trailer = s.substring(pos, trEnd);
+    Matcher om = Pattern.compile("(?:^|[\\r\\n])(\\d{1,8}) 0 obj").matcher(s);
+    while (om.find()) off.put(Integer.parseInt(om.group(1)), (long) om.start(1));
     Matcher rm = Pattern.compile("/Root\\s+(\\d+)\\s+\\d+\\s+R").matcher(trailer);
     Matcher zm = Pattern.compile("/Size\\s+(\\d+)").matcher(trailer);
-    if (!rm.find() || !zm.find()) return false;
+    if (!rm.find() || !zm.find()) throw new IOException("trailer without /Root");
     int root = Integer.parseInt(rm.group(1));
-    int size = Integer.parseInt(zm.group(1));
+    int size = Math.max(Integer.parseInt(zm.group(1)), maxKey(off) + 1);
     Matcher im = Pattern.compile("/Info\\s+\\d+\\s+\\d+\\s+R").matcher(trailer);
     String info = im.find() ? im.group() : "";
     Matcher idm = Pattern.compile("/ID\\s*\\[[^\\]]*\\]").matcher(trailer);
     String id = idm.find() ? idm.group() : "";
 
     String cat = objText(s, off, root).trim();
-    if (cat.contains("/Outlines") || !cat.endsWith(">>")) return false;
+    if (cat.contains("/Outlines")) throw new IOException("already has outlines");
+    if (!cat.endsWith(">>")) throw new IOException("unexpected catalog");
 
     List<Integer> pageObjs = new ArrayList<>();
     Matcher pm = Pattern.compile("/Pages\\s+(\\d+)\\s+\\d+\\s+R").matcher(cat);
-    if (!pm.find()) return false;
+    if (!pm.find()) throw new IOException("catalog without /Pages");
     collectPages(s, off, Integer.parseInt(pm.group(1)), pageObjs, 0);
-    if (pageObjs.isEmpty()) return false;
+    if (pageObjs.isEmpty()) throw new IOException("no pages found");
 
     int n = items.size();
     int outlinesNo = size;
@@ -157,11 +135,14 @@ public final class PdfOutline {
 
     long xrefPos = base + body.length();
     int newSize = firstItemNo + n;
-    body.append("xref\n");
-    body.append(root).append(" 1\n").append(entryLine(newOff.get(root)));
-    body.append(outlinesNo).append(" ").append(n + 1).append("\n");
-    for (int k = outlinesNo; k < newSize; k++) body.append(entryLine(newOff.get(k)));
-    body.append("trailer\n<< /Size ").append(newSize).append(" /Root ").append(root).append(" 0 R /Prev ").append(prev);
+    body.append("xref\n0 ").append(newSize).append("\n");
+    for (int k = 0; k < newSize; k++) {
+      Long o = newOff.get(k);
+      if (o == null) o = off.get(k);
+      if (o == null) body.append(k == 0 ? "0000000000 65535 f \n" : "0000000000 00000 f \n");
+      else body.append(entryLine(o));
+    }
+    body.append("trailer\n<< /Size ").append(newSize).append(" /Root ").append(root).append(" 0 R").append("");
     if (!info.isEmpty()) body.append(" ").append(info);
     if (!id.isEmpty()) body.append(" ").append(id);
     body.append(" >>\nstartxref\n").append(xrefPos).append("\n%%EOF\n");
@@ -177,6 +158,12 @@ public final class PdfOutline {
       return false;
     }
     return true;
+  }
+
+  private static int maxKey(Map<Integer, Long> m) {
+    int mx = 0;
+    for (int k : m.keySet()) if (k > mx) mx = k;
+    return mx;
   }
 
   private static String entryLine(long offset) {
