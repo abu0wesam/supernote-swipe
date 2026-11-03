@@ -19,6 +19,7 @@ try{self.registerPluginLifeListener({onMsg:function(){g.__motRefresh()}})}catch(
 try{r(2).DeviceEventEmitter.addListener('onWindowFocusChanged',function(){g.__motRefresh()})}catch(e){}}
 g.__motList.push(rec);return {remove:function(){rec.dead=true;try{rec.h.remove()}catch(e){}}}}"""
 b=b.replace(A,B)
+b=b.replace("o(n,'PDF',s)","o(n,'Tools',s)",1)
 open('/tmp/bk/b.js','w').write(b)
 zi=zipfile.ZipFile(P+'app.npk')
 with zipfile.ZipFile('/tmp/bk/app.npk','w',zipfile.ZIP_DEFLATED) as zo:

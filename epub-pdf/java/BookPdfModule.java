@@ -1532,14 +1532,38 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
     try {
       File f = new File(path);
       if (!f.isFile()) throw new IOException("File not found");
-      try {
-        java.lang.reflect.Method m = android.os.StrictMode.class.getMethod("disableDeathOnFileUriExposure");
-        m.invoke(null);
-      } catch (Throwable ignored) { }
       String name = f.getName().toLowerCase(Locale.ROOT);
       String mime = name.endsWith(".pdf") ? "application/pdf" : name.endsWith(".epub") ? "application/epub+zip" : "*/*";
+      android.net.Uri uri = null;
+      if (Build.VERSION.SDK_INT >= 29) {
+        // other apps can only read a content:// address, so a copy is placed in Download/ToolsShare
+        try {
+          android.content.ContentResolver cr = getReactApplicationContext().getContentResolver();
+          android.content.ContentValues cv = new android.content.ContentValues();
+          cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, f.getName());
+          cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime);
+          cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Download/ToolsShare");
+          uri = cr.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+          if (uri != null) {
+            java.io.OutputStream os = cr.openOutputStream(uri);
+            FileInputStream fi = new FileInputStream(f);
+            try {
+              byte[] buf = new byte[65536];
+              int r;
+              while ((r = fi.read(buf)) > 0) os.write(buf, 0, r);
+            } finally { fi.close(); os.close(); }
+          }
+        } catch (Throwable t) { uri = null; }
+      }
+      if (uri == null) {
+        try {
+          java.lang.reflect.Method m = android.os.StrictMode.class.getMethod("disableDeathOnFileUriExposure");
+          m.invoke(null);
+        } catch (Throwable ignored) { }
+        uri = android.net.Uri.fromFile(f);
+      }
       android.content.Intent view = new android.content.Intent(android.content.Intent.ACTION_VIEW);
-      view.setDataAndType(android.net.Uri.fromFile(f), mime);
+      view.setDataAndType(uri, mime);
       view.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
       android.content.Intent chooser = android.content.Intent.createChooser(view, "Open with");
       chooser.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
