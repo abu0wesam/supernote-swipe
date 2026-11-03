@@ -132,6 +132,7 @@ var S=l.StyleSheet.create({container:{flex:1,backgroundColor:'#ffffff'},full:{fl
 function Router(){
 var s=r.useState(null),st=s[0],setSt=s[1];
 r.useEffect(function(){var live=true;
+try{if(globalThis.__motRefresh){globalThis.__motLast=0;globalThis.__motRefresh()}}catch(e){}
 SDK.PluginCommAPI.getCurrentFilePath().then(function(x){var p=x&&x.success?x.result:null;if(live)setSt({epub:!!p&&/\.epub$/i.test(p),path:p})}).catch(function(){if(live)setSt({epub:false,path:null})});
 return function(){live=false}},[]);
 if(!st)return r.createElement(l.View,{style:{flex:1,backgroundColor:'#ffffff'}});
