@@ -125,7 +125,7 @@ r.createElement(ZRow2,{key:'dir',kind:'dir',on:cfg.en.dir,onToggle:tog('dir')},r
 r.createElement(l.View,{style:{alignSelf:'stretch',flexDirection:'row',justifyContent:'center',paddingVertical:6,opacity:working?.4:1},pointerEvents:working?'none':'auto'},SegGroup([['pdf','PDF with my settings'],['orig','PDF in the book\'s style']],fmt,function(v){setFmt(v)},true)),
 r.createElement(l.View,{style:S.buttons},
 Btn(working?('Working '+prog):(fmt==='orig'?'Create PDF (book style)':'Create PDF'),exportPdf,!ready||busy||working,true),
-working?Btn('Cancel',cancelExport,false,false):null),
+working?Btn('Cancel',cancelExport,false,false):Btn('Open with\u2026',function(){BK.openWith(path).catch(function(e){setMsg('Failed: '+(e&&e.message?e.message:e))})},working,false)),
 msg&&uri?r.createElement(l.Text,{style:S.message},msg):null,
 r.createElement(l.Text,{style:S.hint},'The page above is drawn by the same code that writes the PDF. A switch off = the standard value. Tap the page to see it full screen.'))}
 var S=l.StyleSheet.create({container:{flex:1,backgroundColor:'#ffffff'},full:{flex:1,backgroundColor:'#ffffff',alignItems:'center',justifyContent:'center'},header:{flexDirection:'row',alignItems:'center',alignSelf:'stretch',height:56,paddingHorizontal:14,borderBottomWidth:1.5,borderColor:'#000000'},title:{fontSize:24,fontWeight:'700',color:'#000000'},page:{flex:1,fontSize:17,color:'#444444',textAlign:'center'},close:{paddingHorizontal:8},hint:{fontSize:14,color:'#444444',marginVertical:4,textAlign:'center',paddingHorizontal:10},message:{fontSize:16,color:'#000000',marginVertical:4,textAlign:'center'},screen:{borderWidth:2,borderColor:'#000000',alignItems:'center',justifyContent:'center',overflow:'hidden',marginVertical:4,backgroundColor:'#ffffff'},buttons:{flexDirection:'row',alignSelf:'stretch',marginTop:8,paddingHorizontal:10},button:{flex:1,marginHorizontal:4,borderWidth:2,borderColor:'#000000',borderRadius:8,paddingVertical:12,alignItems:'center'},buttonMain:{flex:2},buttonText:{fontSize:19,fontWeight:'700',color:'#000000'},disabled:{opacity:.4}});
@@ -135,5 +135,6 @@ r.useEffect(function(){var live=true;
 SDK.PluginCommAPI.getCurrentFilePath().then(function(x){var p=x&&x.success?x.result:null;if(live)setSt({epub:!!p&&/\.epub$/i.test(p),path:p})}).catch(function(){if(live)setSt({epub:false,path:null})});
 return function(){live=false}},[]);
 if(!st)return r.createElement(l.View,{style:{flex:1,backgroundColor:'#ffffff'}});
-return st.epub?r.createElement(BookScreen,{path:st.path}):r.createElement(PdfScreen,null)}
+if(st.epub)return r.createElement(BookScreen,{path:st.path});
+return r.createElement(l.View,{style:{flex:1}},r.createElement(PdfScreen,null),st.path?r.createElement(l.Pressable,{onPress:function(){BK.openWith(st.path).catch(function(){})},style:{position:'absolute',top:6,alignSelf:'center',left:'38%',paddingHorizontal:14,height:40,justifyContent:'center',borderWidth:2.5,borderColor:ZK,borderRadius:9,backgroundColor:ZW}},r.createElement(l.Text,{style:{fontSize:18,fontWeight:'700',color:ZK}},'Open with\u2026')):null)}
 e.default=Router;e.BookScreen=BookScreen;

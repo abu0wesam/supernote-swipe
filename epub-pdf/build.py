@@ -25,7 +25,7 @@ zi=zipfile.ZipFile(P+'app.npk')
 with zipfile.ZipFile('/tmp/bk/app.npk','w',zipfile.ZIP_DEFLATED) as zo:
     for n in zi.namelist(): zo.writestr(zi.getinfo(n),zi.read(n))
     zo.write('/tmp/bk/dex/classes.dex','classes17.dex')
-c=open(P+'PluginConfig.json').read().replace('"1.8.0"','"%s"'%ver).replace('"versionCode": "21"','"versionCode": "%s"'%code).replace('"com.swipeswitch.PdfToolPackage"','"com.swipeswitch.PdfToolPackage",\n    "com.swipeswitch.BookPdfPackage"')
+c=open(P+'PluginConfig.json').read().replace('"name": "PDF Tool"','"name": "Tools"').replace('pdftool8k3m2x7qa','tools8k3m2x7qa').replace('"pluginKey": "PDFTool"','"pluginKey": "Tools"').replace('"1.8.0"','"%s"'%ver).replace('"versionCode": "21"','"versionCode": "%s"'%code).replace('"com.swipeswitch.PdfToolPackage"','"com.swipeswitch.PdfToolPackage",\n    "com.swipeswitch.BookPdfPackage"')
 with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
     for n in ['icon_pdftool.png','drawable-mdpi/assets_icon_text.png','drawable-mdpi/assets_icon_pdftool.png']: z.write(P+n,n)
     z.write('/tmp/bk/app.npk','app.npk'); z.write('/tmp/bk/b.js','SwipeSwitch.bundle'); z.writestr('PluginConfig.json',c)

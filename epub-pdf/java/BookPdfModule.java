@@ -1525,6 +1525,33 @@ public class BookPdfModule extends ReactContextBaseJavaModule {
   }
 
 
+
+  /** Shows the system list of apps that can open the file. */
+  @ReactMethod
+  public void openWith(final String path, final Promise promise) {
+    try {
+      File f = new File(path);
+      if (!f.isFile()) throw new IOException("File not found");
+      try {
+        java.lang.reflect.Method m = android.os.StrictMode.class.getMethod("disableDeathOnFileUriExposure");
+        m.invoke(null);
+      } catch (Throwable ignored) { }
+      String name = f.getName().toLowerCase(Locale.ROOT);
+      String mime = name.endsWith(".pdf") ? "application/pdf" : name.endsWith(".epub") ? "application/epub+zip" : "*/*";
+      android.content.Intent view = new android.content.Intent(android.content.Intent.ACTION_VIEW);
+      view.setDataAndType(android.net.Uri.fromFile(f), mime);
+      view.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+      android.content.Intent chooser = android.content.Intent.createChooser(view, "Open with");
+      chooser.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+      android.app.Activity act = getCurrentActivity();
+      if (act != null) act.startActivity(chooser);
+      else getReactApplicationContext().startActivity(chooser);
+      promise.resolve(true);
+    } catch (Throwable t) {
+      fail(promise, t);
+    }
+  }
+
   /** Never overwrites an existing file: adds " (2)", " (3)" ... */
   private static File uniqueTarget(File f) {
     if (!f.exists()) return f;
