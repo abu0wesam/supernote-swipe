@@ -16,7 +16,6 @@ if(!g.__motList){g.__motList=[];g.__motLast=0;
 g.__motRefresh=function(){var now=Date.now();if(now-g.__motLast<1500)return;g.__motLast=now;g.__motList.forEach(function(x){if(x.dead)return;try{x.h.remove()}catch(e){}try{x.h=self.registerEventListener(EV,x.t,x.n)}catch(e){}})};
 try{r(2).AppState.addEventListener('change',function(s){if('active'===s)g.__motRefresh()})}catch(e){}
 try{self.registerPluginLifeListener({onMsg:function(){g.__motRefresh()}})}catch(e){}
-try{setInterval(function(){try{if(r(2).AppState.currentState==='active')g.__motRefresh()}catch(e){}},20000)}catch(e){}
 try{r(2).DeviceEventEmitter.addListener('onWindowFocusChanged',function(){g.__motRefresh()})}catch(e){}}
 g.__motList.push(rec);return {remove:function(){rec.dead=true;try{rec.h.remove()}catch(e){}}}}"""
 b=b.replace(A,B)
