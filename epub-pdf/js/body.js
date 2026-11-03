@@ -137,5 +137,5 @@ SDK.PluginCommAPI.getCurrentFilePath().then(function(x){var p=x&&x.success?x.res
 return function(){live=false}},[]);
 if(!st)return r.createElement(l.View,{style:{flex:1,backgroundColor:'#ffffff'}});
 if(st.epub)return r.createElement(BookScreen,{path:st.path});
-return r.createElement(l.View,{style:{flex:1}},r.createElement(PdfScreen,null),st.path?r.createElement(l.Pressable,{onPress:function(){BK.openWith(st.path).catch(function(){})},style:{position:'absolute',top:6,alignSelf:'center',left:'38%',paddingHorizontal:14,height:40,justifyContent:'center',borderWidth:2.5,borderColor:ZK,borderRadius:9,backgroundColor:ZW}},r.createElement(l.Text,{style:{fontSize:18,fontWeight:'700',color:ZK}},'Open with\u2026')):null)}
+return r.createElement(r.Fragment,null,r.createElement(PdfScreen,null),st.path?r.createElement(l.Pressable,{onPress:function(){BK.openWith(st.path).catch(function(){})},style:{position:'absolute',top:6,alignSelf:'center',left:'38%',paddingHorizontal:14,height:40,justifyContent:'center',borderWidth:2.5,borderColor:ZK,borderRadius:9,backgroundColor:ZW}},r.createElement(l.Text,{style:{fontSize:18,fontWeight:'700',color:ZK}},'Open with\u2026')):null)}
 e.default=Router;e.BookScreen=BookScreen;
